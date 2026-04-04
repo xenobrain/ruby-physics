@@ -89,8 +89,23 @@ module Physics
         joint_damping_ratio: 1.0,
         joint_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         islands: reuse_hash(old && old[:islands]),
-        next_island_id: 0
+        next_island_id: 0,
+        on_contact_begin: nil,
+        on_contact_persist: nil,
+        on_contact_end: nil
       }
+    end
+
+    def on_contact_begin world, receiver, method
+      world[:on_contact_begin] = [receiver, method]
+    end
+
+    def on_contact_persist world, receiver, method
+      world[:on_contact_persist] = [receiver, method]
+    end
+
+    def on_contact_end world, receiver, method
+      world[:on_contact_end] = [receiver, method]
     end
 
     def create_body world, x: 0.0, y: 0.0, angle: 0.0, type: :dynamic, gravity_scale: 1.0, linear_damping: 0.0, angular_damping: 0.0
@@ -670,6 +685,9 @@ module Physics
       shapes = world[:shapes]
       pairs = world[:pairs]
       bp = world[:broadphase]
+      cb_begin   = world[:on_contact_begin]
+      cb_persist = world[:on_contact_persist]
+      cb_end     = world[:on_contact_end]
       shift = bp[:shift]
       sc = bp[:static_cells]
       dc = bp[:dynamic_cells]
@@ -825,9 +843,13 @@ module Physics
             unless was_touching
               pair[:touching] = true
               Islands.link_contact world, pair
+              if cb_begin; cb_begin[0].send cb_begin[1], ba, bb, pair; end
+            else
+              if cb_persist; cb_persist[0].send cb_persist[1], ba, bb, pair; end
             end
           else
             if was_touching
+              if cb_end; cb_end[0].send cb_end[1], ba, bb, pair; end
               pair[:touching] = false
               Islands.unlink_contact world, pair
               pts = pair[:manifold][:points]
@@ -878,13 +900,25 @@ module Physics
           end
           pairs[key] = new_pair
           Islands.link_contact world, new_pair
+          if cb_begin
+            b1 = find_body world, new_pair[:body_a_id]
+            b2 = find_body world, new_pair[:body_b_id]
+            cb_begin[0].send cb_begin[1], b1, b2, new_pair
+          end
         end
       end
 
       # destroy truly stale pairs (AABB no longer overlaps)
       pairs.delete_if do |_k, v|
         if v[:stale]
-          Islands.unlink_contact world, v if v[:touching]
+          if v[:touching]
+            if cb_end
+              sba = find_body world, v[:body_a_id]
+              sbb = find_body world, v[:body_b_id]
+              cb_end[0].send cb_end[1], sba, sbb, v
+            end
+            Islands.unlink_contact world, v
+          end
           pts = v[:manifold][:points]
           while pts.length > 0; CONTACT_POOL << pts.pop; end
           PAIR_POOL << v

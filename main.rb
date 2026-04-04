@@ -16,6 +16,67 @@ BLOCK_COLORS = %w[red orange yellow blue green indigo]
 ENEMY_COLORS = %w[red blue green orange violet]
 SANDBOX_COLORS = %w[red orange yellow green blue indigo violet]
 SPAWN_MODES = [:circle, :box, :capsule]
+EXPLOSION_FRAMES = (0..6).map { |i| "sprites/misc/explosion-#{i}.png" }
+
+module Game
+  class << self
+    def init
+      @dragon_ids = {}
+      @enemy_map = {}
+      @effects = []
+    end
+
+    def register_dragon body_id
+      @dragon_ids[body_id] = true
+    end
+
+    def register_enemy body_id, entry
+      @enemy_map[body_id] = entry
+    end
+
+    def on_contact_begin body_a, body_b, pair
+      ea = @enemy_map[body_a[:id]]
+      eb = @enemy_map[body_b[:id]]
+      return unless ea || eb
+
+      dragon_hit = @dragon_ids[body_a[:id]] || @dragon_ids[body_b[:id]]
+
+      nx = pair[:manifold][:normal_x]
+      ny = pair[:manifold][:normal_y]
+      dvx = body_b[:vx] - body_a[:vx]
+      dvy = body_b[:vy] - body_a[:vy]
+      impact = (dvx * nx + dvy * ny).abs
+
+      kill_enemy(ea || eb) if dragon_hit || impact > 200
+    end
+
+    def kill_enemy e
+      return unless e[:alive]
+      e[:alive] = false
+      b = e[:body]
+      @effects << { x: b[:x], y: b[:y], timer: 42 }
+    end
+
+    def tick_effects outputs, cam
+      i = 0
+      while i < @effects.length
+        e = @effects[i]
+        e[:timer] -= 1
+        if e[:timer] <= 0
+          @effects.delete_at i
+        else
+          frame = 6 - e[:timer] / 6
+          frame = 6 if frame > 6
+          s = 60 + (42 - e[:timer]) * 2
+          a = (e[:timer] * 255.0 / 42).to_i
+          outputs.sprites << { x: e[:x] - s / 2 - cam, y: e[:y] - s / 2, w: s, h: s,
+                               path: EXPLOSION_FRAMES[frame], a: a }
+          i += 1
+        end
+      end
+    end
+  end
+end
 
 def boot args
   args.state.mode = :game
@@ -27,6 +88,8 @@ end
 def setup_level args
   w = Physics.create_world old: args.state.world
   args.state.world = w
+  Game.init
+  Physics.on_contact_begin w, Game, :on_contact_begin
   args.state.dragons_remaining = 5
   args.state.active_dragon = nil
   args.state.dragging = false
@@ -98,7 +161,9 @@ def add_enemy w, args, x, y
   b = Physics.create_body w, x: x, y: y, type: :dynamic
   Physics.create_box w, body_id: b[:id], w: ENEMY_W, h: ENEMY_H, density: 0.3, friction: 0.4, restitution: 0.05
   Physics::Islands.sleep_body w, b
-  args.state.enemy_bodies << { body: b, shape: w[:shapes].last, color: ENEMY_COLORS[b[:id] % ENEMY_COLORS.length], alive: true }
+  entry = { body: b, shape: w[:shapes].last, color: ENEMY_COLORS[b[:id] % ENEMY_COLORS.length], alive: true }
+  args.state.enemy_bodies << entry
+  Game.register_enemy b[:id], entry
 end
 
 def load_dragon w, args
@@ -107,6 +172,7 @@ def load_dragon w, args
   b[:gravity_scale] = 0.0
   Physics.create_circle w, body_id: b[:id], radius: DRAGON_RADIUS, density: 1.5, friction: 0.5, restitution: 0.3
   args.state.active_dragon = { body: b, shape: w[:shapes].last }
+  Game.register_dragon b[:id]
   args.state.dragging = false
   args.state.game_state = :aiming
 end
@@ -182,7 +248,7 @@ def tick_game args
   args.state.enemy_bodies.each do |e|
     next unless e[:alive]
     b = e[:body]
-    e[:alive] = false if b[:y] < GROUND_Y - 20 || b[:angle].abs > 1.2
+    Game.kill_enemy e if b[:y] < GROUND_Y - 20 || b[:angle].abs > 1.2
   end
 
   # camera
@@ -220,13 +286,15 @@ def tick_game args
   all_d << args.state.active_dragon if args.state.active_dragon
   all_d.each { |d| next unless d; b = d[:body]; next if b[:x] != b[:x]; r = DRAGON_RADIUS; args.outputs.sprites << { x: b[:x] - r * 1.5 - cam, y: b[:y] - r * 1.2, w: r * 3, h: r * 2.4, path: DRAGON_FRAMES[(Kernel.tick_count / 6) % 6], angle: b[:angle] * DEG * 0.3, flip_horizontally: b[:vx] < -10 } }
 
+  Game.tick_effects args.outputs, cam
+
   args.outputs.labels << { x: 10, y: 710, text: "Dragons: #{args.state.dragons_remaining}", size_px: 22, r: 50, g: 50, b: 50 }
   alive = args.state.enemy_bodies.count { |e| e[:alive] }
   args.outputs.labels << { x: 10, y: 685, text: "Enemies: #{alive}", size_px: 22, r: 50, g: 50, b: 50 }
   args.outputs.labels << { x: 640, y: 400, text: "YOU WIN!", size_px: 60, anchor_x: 0.5, anchor_y: 0.5, r: 0, g: 150, b: 0 } if gs == :win
   args.outputs.labels << { x: 640, y: 400, text: "NO MORE DRAGONS!", size_px: 50, anchor_x: 0.5, anchor_y: 0.5, r: 200, g: 0, b: 0 } if gs == :lose
   args.outputs.labels << { x: 640, y: 350, text: "Press R to restart", size_px: 24, anchor_x: 0.5, anchor_y: 0.5 } if gs == :win || gs == :lose
-  args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  [#{gs}]  R=restart  Shift+T=sandbox  Shift+J=joints"
+  args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  [#{gs}]  R=restart  Shift+T=sandbox  Shift+J=joints  Shift+C=callbacks"
 end
 
 
@@ -329,6 +397,176 @@ def tick_sandbox args
   args.outputs.debug << "Click=#{mode}  Tab=shape  D=debug  R=reset  Shift+T=game  Shift+J=joints"
 end
 
+
+# Callback Demo Mode
+module CallbackDemo
+  class << self
+    def init
+      @begin_fx = []
+      @persist_lines = {}
+      @end_fx = []
+      @begin_count = 0
+      @persist_count = 0
+      @end_count = 0
+    end
+
+    def on_contact_begin body_a, body_b, pair
+      @begin_count += 1
+      cx = (body_a[:x] + body_b[:x]) * 0.5
+      cy = (body_a[:y] + body_b[:y]) * 0.5
+      @begin_fx << { x: cx, y: cy, timer: 20 }
+    end
+
+    def on_contact_persist body_a, body_b, pair
+      @persist_count += 1
+      key = (pair[:shape_a_id] << 16) | pair[:shape_b_id]
+      @persist_lines[key] = { ax: body_a[:x], ay: body_a[:y], bx: body_b[:x], by: body_b[:y], timer: 2 }
+    end
+
+    def on_contact_end body_a, body_b, pair
+      @end_count += 1
+      cx = (body_a[:x] + body_b[:x]) * 0.5
+      cy = (body_a[:y] + body_b[:y]) * 0.5
+      @end_fx << { x: cx, y: cy, timer: 25 }
+    end
+
+    def tick_effects outputs
+      i = 0
+      while i < @begin_fx.length
+        e = @begin_fx[i]; e[:timer] -= 1
+        if e[:timer] <= 0
+          @begin_fx.delete_at i
+        else
+          t = 20 - e[:timer]; s = 10 + t * 3; a = e[:timer] * 255 / 20
+          outputs.sprites << { x: e[:x] - s / 2, y: e[:y] - s / 2, w: s, h: s, path: 'sprites/circle/yellow.png', a: a }
+          i += 1
+        end
+      end
+
+      @persist_lines.delete_if do |_k, e|
+        e[:timer] -= 1
+        outputs.lines << { x: e[:ax], y: e[:ay], x2: e[:bx], y2: e[:by], r: 100, g: 255, b: 100, a: 200 }
+        e[:timer] <= 0
+      end
+
+      i = 0
+      while i < @end_fx.length
+        e = @end_fx[i]; e[:timer] -= 1
+        if e[:timer] <= 0
+          @end_fx.delete_at i
+        else
+          t = 25 - e[:timer]; s = 16 + t * 2; a = e[:timer] * 255 / 25
+          outputs.sprites << { x: e[:x] - s / 2, y: e[:y] - s / 2, w: s, h: s, path: 'sprites/misc/star.png', a: a }
+          i += 1
+        end
+      end
+    end
+
+    def begin_count; @begin_count; end
+    def persist_count; @persist_count; end
+    def end_count; @end_count; end
+  end
+end
+
+def setup_callback_demo args
+  w = Physics.create_world old: args.state.world
+  args.state.world = w
+  args.state.spawn_idx = 0
+  args.state.debug_draw = false
+
+  CallbackDemo.init
+  Physics.on_contact_begin w, CallbackDemo, :on_contact_begin
+  Physics.on_contact_persist w, CallbackDemo, :on_contact_persist
+  Physics.on_contact_end w, CallbackDemo, :on_contact_end
+
+  floor = Physics.create_body w, x: 640, y: -10, type: :static
+  Physics.create_box w, body_id: floor[:id], w: 1200, h: 40, friction: 0.8
+  lw = Physics.create_body w, x: -10, y: 360, type: :static
+  Physics.create_box w, body_id: lw[:id], w: 40, h: 800, friction: 0.5
+  rw = Physics.create_body w, x: 1290, y: 360, type: :static
+  Physics.create_box w, body_id: rw[:id], w: 40, h: 800, friction: 0.5
+
+  ramp = Physics.create_body w, x: 400, y: 200, type: :static
+  Physics.create_segment w, body_id: ramp[:id], x1: -150, y1: 45, x2: 150, y2: -45
+  ramp2 = Physics.create_body w, x: 880, y: 120, type: :static
+  Physics.create_segment w, body_id: ramp2[:id], x1: -150, y1: -45, x2: 150, y2: 45
+
+  5.times { sb_circle w, 200 + rand(880), 400 + rand(250) }
+  5.times { sb_box w, 200 + rand(880), 400 + rand(250) }
+  3.times { sb_capsule w, 200 + rand(880), 400 + rand(250) }
+  Physics.transform_shapes w
+end
+
+def tick_callback_demo args
+  w = args.state.world
+
+  if args.inputs.keyboard.key_down.r
+    args.state.mode = :callbacks; setup_callback_demo args; return
+  end
+  args.state.debug_draw = !args.state.debug_draw if args.inputs.keyboard.key_down.d
+  args.state.spawn_idx = (args.state.spawn_idx + 1) % SPAWN_MODES.length if args.inputs.keyboard.key_down.tab
+  mode = SPAWN_MODES[args.state.spawn_idx]
+  if args.inputs.mouse.click
+    mx = args.inputs.mouse.x; my = args.inputs.mouse.y
+    case mode
+    when :box then sb_box w, mx, my
+    when :circle then sb_circle w, mx, my
+    when :capsule then sb_capsule w, mx, my
+    end
+  end
+
+  Physics.step w
+
+  args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 25, g: 25, b: 35 }
+  args.outputs.solids << { x: 0, y: 0, w: 1280, h: 20, r: 50, g: 55, b: 65 }
+
+  shapes = w[:shapes]; i = 0
+  while i < shapes.length
+    s = shapes[i]; b = Physics.find_body w, s[:body_id]; i += 1
+    next if b[:x] != b[:x]
+    color = SANDBOX_COLORS[s[:id] % SANDBOX_COLORS.length]; ad = b[:angle] * DEG
+    if s[:type] == :circle
+      next if b[:type] == :static; r = s[:radius]; d = r * 2
+      args.outputs.sprites << { x: b[:x] - r + s[:offset_x], y: b[:y] - r + s[:offset_y], w: d, h: d, path: "sprites/circle/#{color}.png", angle: ad }
+    elsif s[:type] == :polygon
+      if b[:type] == :static
+        wv = s[:world_vertices]; c = s[:count]; vi = 0
+        while vi < c; ni = vi + 1 < c ? vi + 1 : 0; vi2 = vi * 2; ni2 = ni * 2
+          args.outputs.lines << { x: wv[vi2], y: wv[vi2 + 1], x2: wv[ni2], y2: wv[ni2 + 1], r: 80, g: 80, b: 100 }; vi += 1; end
+      else
+        v = s[:vertices]; x0 = 1e18; x1 = -1e18; y0 = 1e18; y1 = -1e18; vi = 0
+        while vi < s[:count]; vi2 = vi * 2; lx = v[vi2]; ly = v[vi2 + 1]
+          x0 = lx if lx < x0; x1 = lx if lx > x1; y0 = ly if ly < y0; y1 = ly if ly > y1; vi += 1; end
+        args.outputs.sprites << { x: b[:x] - (x1-x0)*0.5, y: b[:y] - (y1-y0)*0.5, w: x1-x0, h: y1-y0, path: "sprites/square/#{color}.png", angle: ad }
+      end
+    elsif s[:type] == :capsule
+      ca = Math.cos b[:angle]; sa_v = Math.sin b[:angle]; bx = b[:x]; by = b[:y]; r = s[:radius]; d = r*2
+      w1x = bx+ca*s[:x1]-sa_v*s[:y1]; w1y = by+sa_v*s[:x1]+ca*s[:y1]
+      w2x = bx+ca*s[:x2]-sa_v*s[:y2]; w2y = by+sa_v*s[:x2]+ca*s[:y2]
+      args.outputs.sprites << { x: w1x-r, y: w1y-r, w: d, h: d, path: "sprites/circle/#{color}.png" }
+      args.outputs.sprites << { x: w2x-r, y: w2y-r, w: d, h: d, path: "sprites/circle/#{color}.png" }
+      sl = Math.sqrt((w2x-w1x)**2+(w2y-w1y)**2)
+      args.outputs.sprites << { x: (w1x+w2x)*0.5-sl*0.5, y: (w1y+w2y)*0.5-r, w: sl, h: d, path: "sprites/square/#{color}.png", angle: ad }
+    elsif s[:type] == :segment
+      args.outputs.lines << { x: s[:wx1], y: s[:wy1], x2: s[:wx2], y2: s[:wy2], r: 200, g: 200, b: 100 }
+    end
+  end
+
+  CallbackDemo.tick_effects args.outputs
+
+  if args.state.debug_draw
+    Physics::DebugDraw.draw_contacts w, args.outputs; Physics::DebugDraw.draw_aabbs w, args.outputs; Physics::DebugDraw.draw_sleep_state w, args.outputs
+  end
+
+  args.outputs.labels << { x: 10, y: 710, text: "Callback Demo", size_px: 24, r: 255, g: 255, b: 255 }
+  args.outputs.labels << { x: 10, y: 685, text: "Begin: #{CallbackDemo.begin_count}  Persist: #{CallbackDemo.persist_count}  End: #{CallbackDemo.end_count}", size_px: 18, r: 200, g: 200, b: 200 }
+  args.outputs.labels << { x: 10, y: 662, text: "Yellow flash = begin   Green line = persist   Star = end", size_px: 14, r: 150, g: 150, b: 180 }
+  dc = w[:bodies].count { |b| b[:type] == :dynamic }; sc = w[:bodies].count { |b| b[:sleeping] }
+  args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  Bodies: #{dc}  Sleep: #{sc}"
+  args.outputs.debug << "Click=#{mode}  Tab=shape  D=debug  R=reset  Shift+C=game"
+end
+
+
 def tick args
   if args.state.crash_msg
     args.outputs.labels << { x: 20, y: 700, text: args.state.crash_msg.to_s, size_px: 14, r: 255 }
@@ -368,10 +606,20 @@ def tick args
     return
   end
 
+  if args.inputs.keyboard.key_down.c && args.inputs.keyboard.shift
+    if args.state.mode == :callbacks
+      args.state.mode = :game; setup_level args
+    else
+      args.state.mode = :callbacks; setup_callback_demo args
+    end
+    return
+  end
+
   case args.state.mode
-  when :sandbox then tick_sandbox args
-  when :joints  then tick_joints_demo args
-  when :stress  then StressTest.tick_stress args
+  when :sandbox   then tick_sandbox args
+  when :joints    then tick_joints_demo args
+  when :stress    then StressTest.tick_stress args
+  when :callbacks then tick_callback_demo args
   else tick_game args
   end
 rescue => e
@@ -455,7 +703,7 @@ def build_pendulum w, args
   Physics.create_box w, body_id: blade[:id], w: 200, h: 12, density: 0.5, friction: 0.5
   j = Physics::Joints.create_revolute_joint w,
     body_a_id: motor_pivot[:id], body_b_id: blade[:id],
-    enable_motor: true, motor_speed: 3.0, max_motor_torque: 500000.0
+    enable_motor: true, motor_speed: 6.0, max_motor_torque: 500000.0
   args.state.joint_list << j
   args.state.joint_bodies << { body: blade, hw: 100, hh: 6, color: 'violet' }
 end
@@ -606,7 +854,7 @@ def build_wheel_demo w, args
     local_anchor_ax: 50.0, local_anchor_ay: -15.0,
     local_axis_ax: 0.0, local_axis_ay: 1.0,
     enable_spring: true, hertz: 5.0, damping_ratio: 0.7,
-    enable_motor: true, motor_speed: 0.0, max_motor_torque: 500000.0,
+    enable_motor: true, motor_speed: 0.0, max_motor_torque: 2000000.0,
     enable_limit: true, lower_translation: -15.0, upper_translation: 15.0
   args.state.joint_list << j
   args.state.joint_bodies << { body: fw, radius: 20, color: 'gray' }
@@ -618,7 +866,7 @@ def build_wheel_demo w, args
     local_anchor_ax: -50.0, local_anchor_ay: -15.0,
     local_axis_ax: 0.0, local_axis_ay: 1.0,
     enable_spring: true, hertz: 5.0, damping_ratio: 0.7,
-    enable_motor: true, motor_speed: 0.0, max_motor_torque: 500000.0,
+    enable_motor: true, motor_speed: 0.0, max_motor_torque: 2000000.0,
     enable_limit: true, lower_translation: -15.0, upper_translation: 15.0
   args.state.joint_list << j
   args.state.joint_bodies << { body: rw, radius: 20, color: 'gray' }
@@ -732,20 +980,22 @@ def tick_joints_demo args
     build_joint_scene args, new_scene; return
   end
 
-  # wheel demo: arrow keys control motor
+  # wheel demo: arrow keys control motor + direct chassis force
   if args.state.joint_scene == 4 && args.state.wheel_chassis
+    chassis = args.state.wheel_chassis
     if args.inputs.keyboard.right || args.inputs.keyboard.left
-      spd = args.inputs.keyboard.right ? -40.0 : 40.0
+      dir = args.inputs.keyboard.right ? 1.0 : -1.0
+      spd = -dir * 200.0
       w[:joints].each do |j|
         next unless j[:type] == :wheel
         j[:motor_speed] = spd
       end
+      chassis[:fx] += dir * 3000000.0
       # wake all car bodies so motor + friction take effect
       w[:bodies].each do |b|
         next unless b[:type] == :dynamic && b[:sleeping]
-        b[:sleeping] = false; b[:sleep_time] = 0.0
+        Physics::Islands.wake_body w, b
       end
-      w[:broadphase][:static_dirty] = true
     else
       w[:joints].each { |j| j[:motor_speed] = 0.0 if j[:type] == :wheel }
     end
