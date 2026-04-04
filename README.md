@@ -305,3 +305,7 @@ The `app/main.rb` and `app/stress.rb` files contain several interactive demos:
 ## License
 
 Unlicense / Public Domain
+
+
+
+*The author would like to acknowledge and thank Erin Catto and Scott Lembcke, whose work on Box2D and Chipmunk respectively advanced the state of the art in real-time physics simulation. This library would not have been possible without their contributions.*
