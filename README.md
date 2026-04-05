@@ -124,7 +124,7 @@ b = Physics.create_body w,
 
 ### Shapes
 
-All shapes are attached to a body via `body_id`. Dynamic bodies automatically compute mass and inertia from shape density and geometry. All shape creation methods accept optional `layer:` and `mask:` parameters for collision filtering (see [Collision Filtering](#collision-filtering)).
+All shapes are attached to a body via `body_id`. Dynamic bodies automatically compute mass and inertia from shape density and geometry. All shape creation methods accept optional `layer:` and `mask:` parameters for [collision filtering](#collision-filtering).
 
 ```ruby
 Physics.create_circle w,
@@ -132,33 +132,32 @@ Physics.create_circle w,
   radius: 20.0,
   offset_x: 0.0, offset_y: 0.0,  # local offset from body center
   density: 1.0, friction: 0.6, restitution: 0.0,
-  layer: 0xFFFF, mask: 0xFFFF  # collision filter (default: collide with everything)
+  layer: Physics::LAYERS[:player], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
 
 Physics.create_box w,
   body_id: b[:id],
   w: 40, h: 20,
   density: 1.0, friction: 0.6, restitution: 0.0,
-  layer: 0xFFFF, mask: 0xFFFF
+  layer: Physics::LAYERS[:terrain], mask: 0xFFFF  # 0xFFFF = collide with everything (default)
 
 Physics.create_polygon w,
   body_id: b[:id],
   vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
-  density: 1.0, friction: 0.6, restitution: 0.0,
-  layer: 0xFFFF, mask: 0xFFFF
+  density: 1.0, friction: 0.6, restitution: 0.0
 
 Physics.create_capsule w,
   body_id: b[:id],
   x1: -20, y1: 0, x2: 20, y2: 0,  # local endpoints
   radius: 8.0,
-  density: 1.0, friction: 0.6, restitution: 0.0,
-  layer: 0xFFFF, mask: 0xFFFF
+  density: 1.0, friction: 0.6, restitution: 0.0
 
 Physics.create_segment w,
   body_id: b[:id],
   x1: -100, y1: 0, x2: 100, y2: 0,  # local endpoints (zero-thickness line)
-  friction: 0.6, restitution: 0.0,
-  layer: 0xFFFF, mask: 0xFFFF
+  friction: 0.6, restitution: 0.0
 ```
+
+When `layer:` and `mask:` are omitted they default to `0xFFFF` (collide with everything).
 
 ### Forces and Impulses
 
