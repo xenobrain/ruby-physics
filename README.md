@@ -225,31 +225,27 @@ Physics::Joints.create_motor_joint w,
 
 ### Contact Callbacks
 
-Register world-level callbacks to respond to collision events. Callbacks are stored as `[receiver, :method_symbol]` and invoked via `send`.
+Register world-level callbacks to respond to collision events. The receiver can be any object — use `self` for top-level methods or a module/instance that responds to the named method.
 
 ```ruby
-Physics.on_contact_begin w, MyGame, :on_begin
-Physics.on_contact_persist w, MyGame, :on_persist
-Physics.on_contact_end w, MyGame, :on_end
+Physics.on_contact_begin w, self, :on_begin
+Physics.on_contact_persist w, self, :on_persist
+Physics.on_contact_end w, self, :on_end
 ```
 
 All three callbacks receive the same arguments:
 
 ```ruby
-module MyGame
-  class << self
-    def on_begin body_a, body_b, pair
-      # body_a, body_b — the two colliding body hashes
-      # pair[:manifold] — collision data:
-      #   :normal_x, :normal_y  — contact normal (A to B)
-      #   :friction, :restitution
-      #   :points — array of contact point hashes:
-      #     :anchor_ax, :anchor_ay  — contact on body A
-      #     :anchor_bx, :anchor_by  — contact on body B
-      #     :separation             — negative if penetrating
-      #     :normal_impulse         — accumulated solver impulse
-    end
-  end
+def on_begin body_a, body_b, pair
+  # body_a, body_b — the two colliding body hashes
+  # pair[:manifold] — collision data:
+  #   :normal_x, :normal_y  — contact normal (A to B)
+  #   :friction, :restitution
+  #   :points — array of contact point hashes:
+  #     :anchor_ax, :anchor_ay  — contact on body A
+  #     :anchor_bx, :anchor_by  — contact on body B
+  #     :separation             — negative if penetrating
+  #     :normal_impulse         — accumulated solver impulse
 end
 ```
 
