@@ -950,7 +950,7 @@ module Collide
       if oa > ob
         shape_a, shape_b = shape_b, shape_a
         body_a, body_b = body_b, body_a
-        ta, tb = tb, ta; oa, ob = ob, oa
+        tmp = oa; oa = ob; ob = tmp
         flipped = true
       else
         flipped = false
@@ -1975,33 +1975,27 @@ module Joints
         j = joints[ji]; ji += 1
         ba = bodies[j[:body_a_id]]; bb = bodies[j[:body_b_id]]
         next if ba[:sleeping] && bb[:sleeping]
-        mA = ba[:type] == :dynamic ? ba[:inv_mass] : 0.0
-        iA = ba[:type] == :dynamic ? ba[:inv_inertia] : 0.0
-        mB = bb[:type] == :dynamic ? bb[:inv_mass] : 0.0
-        iB = bb[:type] == :dynamic ? bb[:inv_inertia] : 0.0
-        j[:inv_mass_a] = mA; j[:inv_mass_b] = mB
-        j[:inv_inertia_a] = iA; j[:inv_inertia_b] = iB
+        ma = ba[:type] == :dynamic ? ba[:inv_mass] : 0.0
+        ia = ba[:type] == :dynamic ? ba[:inv_inertia] : 0.0
+        mb = bb[:type] == :dynamic ? bb[:inv_mass] : 0.0
+        ib = bb[:type] == :dynamic ? bb[:inv_inertia] : 0.0
+        j[:inv_mass_a] = ma; j[:inv_mass_b] = mb
+        j[:inv_inertia_a] = ia; j[:inv_inertia_b] = ib
         cos_a = Math.cos(ba[:angle]); sin_a = Math.sin(ba[:angle])
         cos_b = Math.cos(bb[:angle]); sin_b = Math.sin(bb[:angle])
 
         case j[:type]
-        when :distance
-          prepare_distance j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h
-        when :revolute
-          prepare_revolute j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h, constraint_softness
-        when :prismatic
-          prepare_prismatic j, ba, bb, cos_a, sin_a, cos_b, sin_b, h
-        when :weld
-          prepare_weld j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h, constraint_softness
-        when :wheel
-          prepare_wheel j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h
-        when :motor
-          prepare_motor j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h
+        when :distance  then prepare_distance j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h
+        when :revolute  then prepare_revolute j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h, constraint_softness
+        when :prismatic then prepare_prismatic j, ba, bb, cos_a, sin_a, cos_b, sin_b, h
+        when :weld      then prepare_weld j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h, constraint_softness
+        when :wheel     then prepare_wheel j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h
+        when :motor     then prepare_motor j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h
         end
       end
     end
 
-    def prepare_distance j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h
+    def prepare_distance j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h
       lax = j[:local_anchor_ax]; lay = j[:local_anchor_ay]
       lbx = j[:local_anchor_bx]; lby = j[:local_anchor_by]
       j[:anchor_ax] = cos_a * lax - sin_a * lay
@@ -2018,13 +2012,13 @@ module Joints
       len = 1e-10 if len < 1e-10
       ax = sep_x / len; ay = sep_y / len
       cra = rax * ay - ray * ax; crb = rbx * ay - rby * ax
-      k = mA + mB + iA * cra * cra + iB * crb * crb
+      k = ma + mb + ia * cra * cra + ib * crb * crb
       j[:axial_mass] = k > 0.0 ? 1.0 / k : 0.0
       soft = j[:softness]
       Solver.fill_soft soft, j[:hertz], j[:damping_ratio], h
     end
 
-    def prepare_revolute j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h, cs
+    def prepare_revolute j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h, cs
       lax = j[:local_anchor_ax]; lay = j[:local_anchor_ay]
       lbx = j[:local_anchor_bx]; lby = j[:local_anchor_by]
       # frame A: rotation = body_rot * local_frame_rot
@@ -2040,7 +2034,7 @@ module Joints
       j[:frame_by] = sin_b * lbx + cos_b * lby
       j[:delta_center_x] = bb[:x] - ba[:x]
       j[:delta_center_y] = bb[:y] - ba[:y]
-      k = iA + iB
+      k = ia + ib
       j[:axial_mass] = k > 0.0 ? 1.0 / k : 0.0
       Solver.fill_soft j[:softness], j[:hertz], j[:damping_ratio], h
     end
@@ -2063,7 +2057,7 @@ module Joints
       Solver.fill_soft j[:softness], j[:hertz], j[:damping_ratio], h
     end
 
-    def prepare_weld j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h, cs
+    def prepare_weld j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h, cs
       lax = j[:local_anchor_ax]; lay = j[:local_anchor_ay]
       lbx = j[:local_anchor_bx]; lby = j[:local_anchor_by]
       lfa_c = j[:local_frame_a_cos]; lfa_s = j[:local_frame_a_sin]
@@ -2078,7 +2072,7 @@ module Joints
       j[:frame_by] = sin_b * lbx + cos_b * lby
       j[:delta_center_x] = bb[:x] - ba[:x]
       j[:delta_center_y] = bb[:y] - ba[:y]
-      k = iA + iB
+      k = ia + ib
       j[:axial_mass] = k > 0.0 ? 1.0 / k : 0.0
       ls = j[:linear_softness]; as = j[:angular_softness]
       if j[:linear_hertz] == 0.0
@@ -2093,7 +2087,7 @@ module Joints
       end
     end
 
-    def prepare_wheel j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h
+    def prepare_wheel j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h
       lax = j[:local_anchor_ax]; lay = j[:local_anchor_ay]
       lbx = j[:local_anchor_bx]; lby = j[:local_anchor_by]
       lfa_c = j[:local_frame_a_cos]; lfa_s = j[:local_frame_a_sin]
@@ -2115,19 +2109,19 @@ module Joints
       # perp constraint
       s1 = (dx + rax) * py - (dy + ray) * px
       s2 = rbx * py - rby * px
-      kp = mA + mB + iA * s1 * s1 + iB * s2 * s2
+      kp = ma + mb + ia * s1 * s1 + ib * s2 * s2
       j[:perp_mass] = kp > 0.0 ? 1.0 / kp : 0.0
       # axial (spring) constraint
       a1 = (dx + rax) * ax_y - (dy + ray) * ax_x
       a2 = rbx * ax_y - rby * ax_x
-      ka = mA + mB + iA * a1 * a1 + iB * a2 * a2
+      ka = ma + mb + ia * a1 * a1 + ib * a2 * a2
       j[:axial_mass] = ka > 0.0 ? 1.0 / ka : 0.0
       Solver.fill_soft j[:softness], j[:hertz], j[:damping_ratio], h
-      km = iA + iB
+      km = ia + ib
       j[:motor_mass] = km > 0.0 ? 1.0 / km : 0.0
     end
 
-    def prepare_motor j, ba, bb, cos_a, sin_a, cos_b, sin_b, mA, iA, mB, iB, h
+    def prepare_motor j, ba, bb, cos_a, sin_a, cos_b, sin_b, ma, ia, mb, ib, h
       lax = j[:local_anchor_ax]; lay = j[:local_anchor_ay]
       lbx = j[:local_anchor_bx]; lby = j[:local_anchor_by]
       lfa_c = j[:local_frame_a_cos]; lfa_s = j[:local_frame_a_sin]
@@ -2147,14 +2141,14 @@ module Joints
       Solver.fill_soft j[:linear_softness], j[:linear_hertz], j[:linear_damping_ratio], h
       Solver.fill_soft j[:angular_softness], j[:angular_hertz], j[:angular_damping_ratio], h
       # 2x2 mass matrix → inverse
-      k_xx = mA + mB + ray * ray * iA + rby * rby * iB
-      k_xy = -ray * rax * iA - rby * rbx * iB
-      k_yy = mA + mB + rax * rax * iA + rbx * rbx * iB
+      k_xx = ma + mb + ray * ray * ia + rby * rby * ib
+      k_xy = -ray * rax * ia - rby * rbx * ib
+      k_yy = ma + mb + rax * rax * ia + rbx * rbx * ib
       det = k_xx * k_yy - k_xy * k_xy
       det = det != 0.0 ? 1.0 / det : 0.0
       j[:linear_mass_xx] = det * k_yy; j[:linear_mass_xy] = -det * k_xy
       j[:linear_mass_yx] = -det * k_xy; j[:linear_mass_yy] = det * k_xx
-      ka = iA + iB
+      ka = ia + ib
       j[:angular_mass] = ka > 0.0 ? 1.0 / ka : 0.0
     end
 
@@ -2179,7 +2173,7 @@ module Joints
     end
 
     def warm_start_distance j, ba, bb
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
       cos_da_b = bb[:cos_da]; sin_da_b = bb[:sin_da]
       rax = cos_da_a * j[:anchor_ax] - sin_da_a * j[:anchor_ay]
@@ -2194,15 +2188,15 @@ module Joints
       total = j[:impulse] + j[:lower_impulse] - j[:upper_impulse] + j[:motor_impulse]
       px = total * ax; py = total * ay
       if ba[:type] == :dynamic
-        ba[:vx] -= mA * px; ba[:vy] -= mA * py; ba[:w] -= iA * (rax * py - ray * px)
+        ba[:vx] -= ma * px; ba[:vy] -= ma * py; ba[:w] -= ia * (rax * py - ray * px)
       end
       if bb[:type] == :dynamic
-        bb[:vx] += mB * px; bb[:vy] += mB * py; bb[:w] += iB * (rbx * py - rby * px)
+        bb[:vx] += mb * px; bb[:vy] += mb * py; bb[:w] += ib * (rbx * py - rby * px)
       end
     end
 
     def warm_start_revolute j, ba, bb
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
       cos_da_b = bb[:cos_da]; sin_da_b = bb[:sin_da]
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
@@ -2212,17 +2206,17 @@ module Joints
       lix = j[:linear_impulse_x]; liy = j[:linear_impulse_y]
       axial = j[:spring_impulse] + j[:motor_impulse] + j[:lower_impulse] - j[:upper_impulse]
       if ba[:type] == :dynamic
-        ba[:vx] -= mA * lix; ba[:vy] -= mA * liy
-        ba[:w] -= iA * ((rax * liy - ray * lix) + axial)
+        ba[:vx] -= ma * lix; ba[:vy] -= ma * liy
+        ba[:w] -= ia * ((rax * liy - ray * lix) + axial)
       end
       if bb[:type] == :dynamic
-        bb[:vx] += mB * lix; bb[:vy] += mB * liy
-        bb[:w] += iB * ((rbx * liy - rby * lix) + axial)
+        bb[:vx] += mb * lix; bb[:vy] += mb * liy
+        bb[:w] += ib * ((rbx * liy - rby * lix) + axial)
       end
     end
 
     def warm_start_prismatic j, ba, bb
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
       cos_da_b = bb[:cos_da]; sin_da_b = bb[:sin_da]
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
@@ -2247,15 +2241,15 @@ module Joints
       la = axial * a1 + perp_imp * s1 + angle_imp
       lb = axial * a2 + perp_imp * s2 + angle_imp
       if ba[:type] == :dynamic
-        ba[:vx] -= mA * ppx; ba[:vy] -= mA * ppy; ba[:w] -= iA * la
+        ba[:vx] -= ma * ppx; ba[:vy] -= ma * ppy; ba[:w] -= ia * la
       end
       if bb[:type] == :dynamic
-        bb[:vx] += mB * ppx; bb[:vy] += mB * ppy; bb[:w] += iB * lb
+        bb[:vx] += mb * ppx; bb[:vy] += mb * ppy; bb[:w] += ib * lb
       end
     end
 
     def warm_start_weld j, ba, bb
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
       cos_da_b = bb[:cos_da]; sin_da_b = bb[:sin_da]
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
@@ -2264,17 +2258,17 @@ module Joints
       rby = sin_da_b * j[:frame_bx] + cos_da_b * j[:frame_by]
       lix = j[:linear_impulse_x]; liy = j[:linear_impulse_y]; ai = j[:angular_impulse]
       if ba[:type] == :dynamic
-        ba[:vx] -= mA * lix; ba[:vy] -= mA * liy
-        ba[:w] -= iA * ((rax * liy - ray * lix) + ai)
+        ba[:vx] -= ma * lix; ba[:vy] -= ma * liy
+        ba[:w] -= ia * ((rax * liy - ray * lix) + ai)
       end
       if bb[:type] == :dynamic
-        bb[:vx] += mB * lix; bb[:vy] += mB * liy
-        bb[:w] += iB * ((rbx * liy - rby * lix) + ai)
+        bb[:vx] += mb * lix; bb[:vy] += mb * liy
+        bb[:w] += ib * ((rbx * liy - rby * lix) + ai)
       end
     end
 
     def warm_start_wheel j, ba, bb
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
       cos_da_b = bb[:cos_da]; sin_da_b = bb[:sin_da]
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
@@ -2297,15 +2291,15 @@ module Joints
       la = axial * a1 + j[:perp_impulse] * s1 + j[:motor_impulse]
       lb = axial * a2 + j[:perp_impulse] * s2 + j[:motor_impulse]
       if ba[:type] == :dynamic
-        ba[:vx] -= mA * ppx; ba[:vy] -= mA * ppy; ba[:w] -= iA * la
+        ba[:vx] -= ma * ppx; ba[:vy] -= ma * ppy; ba[:w] -= ia * la
       end
       if bb[:type] == :dynamic
-        bb[:vx] += mB * ppx; bb[:vy] += mB * ppy; bb[:w] += iB * lb
+        bb[:vx] += mb * ppx; bb[:vy] += mb * ppy; bb[:w] += ib * lb
       end
     end
 
     def warm_start_motor j, ba, bb
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
       cos_da_b = bb[:cos_da]; sin_da_b = bb[:sin_da]
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
@@ -2316,12 +2310,12 @@ module Joints
       liy = j[:linear_velocity_impulse_y] + j[:linear_spring_impulse_y]
       ai = j[:angular_velocity_impulse] + j[:angular_spring_impulse]
       if ba[:type] == :dynamic
-        ba[:vx] -= mA * lix; ba[:vy] -= mA * liy
-        ba[:w] -= iA * ((rax * liy - ray * lix) + ai)
+        ba[:vx] -= ma * lix; ba[:vy] -= ma * liy
+        ba[:w] -= ia * ((rax * liy - ray * lix) + ai)
       end
       if bb[:type] == :dynamic
-        bb[:vx] += mB * lix; bb[:vy] += mB * liy
-        bb[:w] += iB * ((rbx * liy - rby * lix) + ai)
+        bb[:vx] += mb * lix; bb[:vy] += mb * liy
+        bb[:w] += ib * ((rbx * liy - rby * lix) + ai)
       end
     end
 
@@ -2347,7 +2341,7 @@ module Joints
     end
 
     def solve_distance j, ba, bb, h, inv_h, use_bias, cs
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       vax = ba[:vx]; vay = ba[:vy]; wa = ba[:w]
       vbx = bb[:vx]; vby = bb[:vy]; wb = bb[:w]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
@@ -2379,8 +2373,8 @@ module Joints
           new_imp = low if new_imp < low; new_imp = high if new_imp > high
           j[:impulse] = new_imp; imp = new_imp - old_imp
           px = imp * ax; py = imp * ay
-          vax -= mA * px; vay -= mA * py; wa -= iA * (rax * py - ray * px)
-          vbx += mB * px; vby += mB * py; wb += iB * (rbx * py - rby * px)
+          vax -= ma * px; vay -= ma * py; wa -= ia * (rax * py - ray * px)
+          vbx += mb * px; vby += mb * py; wb += ib * (rbx * py - rby * px)
         end
         # motor
         if j[:enable_motor]
@@ -2394,8 +2388,8 @@ module Joints
           new_imp = -max_imp if new_imp < -max_imp; new_imp = max_imp if new_imp > max_imp
           j[:motor_impulse] = new_imp; imp = new_imp - old_imp
           px = imp * ax; py = imp * ay
-          vax -= mA * px; vay -= mA * py; wa -= iA * (rax * py - ray * px)
-          vbx += mB * px; vby += mB * py; wb += iB * (rbx * py - rby * px)
+          vax -= ma * px; vay -= ma * py; wa -= ia * (rax * py - ray * px)
+          vbx += mb * px; vby += mb * py; wb += ib * (rbx * py - rby * px)
         end
         # limits
         if j[:enable_limit]
@@ -2415,8 +2409,8 @@ module Joints
           new_imp = 0.0 if new_imp < 0.0
           j[:lower_impulse] = new_imp; imp = new_imp - old_imp
           px = imp * ax; py = imp * ay
-          vax -= mA * px; vay -= mA * py; wa -= iA * (rax * py - ray * px)
-          vbx += mB * px; vby += mB * py; wb += iB * (rbx * py - rby * px)
+          vax -= ma * px; vay -= ma * py; wa -= ia * (rax * py - ray * px)
+          vbx += mb * px; vby += mb * py; wb += ib * (rbx * py - rby * px)
           # upper (sign flipped)
           vrx = vax - wa * ray - vbx + wb * rby
           vry = vay + wa * rax - vby - wb * rbx
@@ -2433,8 +2427,8 @@ module Joints
           new_imp = 0.0 if new_imp < 0.0
           j[:upper_impulse] = new_imp; imp = new_imp - old_imp
           px = -imp * ax; py = -imp * ay
-          vax -= mA * px; vay -= mA * py; wa -= iA * (rax * py - ray * px)
-          vbx += mB * px; vby += mB * py; wb += iB * (rbx * py - rby * px)
+          vax -= ma * px; vay -= ma * py; wa -= ia * (rax * py - ray * px)
+          vbx += mb * px; vby += mb * py; wb += ib * (rbx * py - rby * px)
         end
       else
         # rigid
@@ -2449,20 +2443,20 @@ module Joints
         imp = -mass_scale * j[:axial_mass] * (cdot + bias) - impulse_scale * j[:impulse]
         j[:impulse] += imp
         px = imp * ax; py = imp * ay
-        vax -= mA * px; vay -= mA * py; wa -= iA * (rax * py - ray * px)
-        vbx += mB * px; vby += mB * py; wb += iB * (rbx * py - rby * px)
+        vax -= ma * px; vay -= ma * py; wa -= ia * (rax * py - ray * px)
+        vbx += mb * px; vby += mb * py; wb += ib * (rbx * py - rby * px)
       end
       ba[:vx] = vax; ba[:vy] = vay; ba[:w] = wa if ba[:type] == :dynamic
       bb[:vx] = vbx; bb[:vy] = vby; bb[:w] = wb if bb[:type] == :dynamic
     end
 
     def solve_revolute j, ba, bb, h, inv_h, use_bias, cs
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       vax = ba[:vx]; vay = ba[:vy]; wa = ba[:w]
       vbx = bb[:vx]; vby = bb[:vy]; wb = bb[:w]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
       cos_da_b = bb[:cos_da]; sin_da_b = bb[:sin_da]
-      fixed_rot = (iA + iB == 0.0)
+      fixed_rot = (ia + ib == 0.0)
       # current frame rotations
       qa_cos = cos_da_a * j[:frame_a_cos] - sin_da_a * j[:frame_a_sin]
       qa_sin = sin_da_a * j[:frame_a_cos] + cos_da_a * j[:frame_a_sin]
@@ -2483,7 +2477,7 @@ module Joints
         cdot = wb - wa
         imp = -soft[:mass_scale] * j[:axial_mass] * (cdot + bias) - soft[:impulse_scale] * j[:spring_impulse]
         j[:spring_impulse] += imp
-        wa -= iA * imp; wb += iB * imp
+        wa -= ia * imp; wb += ib * imp
       end
       # motor
       if j[:enable_motor] && !fixed_rot
@@ -2494,7 +2488,7 @@ module Joints
         new_imp = old_imp + imp
         new_imp = -max_imp if new_imp < -max_imp; new_imp = max_imp if new_imp > max_imp
         j[:motor_impulse] = new_imp; imp = new_imp - old_imp
-        wa -= iA * imp; wb += iB * imp
+        wa -= ia * imp; wb += ib * imp
       end
       # limits
       if j[:enable_limit] && !fixed_rot
@@ -2512,7 +2506,7 @@ module Joints
         imp = -mass_scale * j[:axial_mass] * (cdot + bias) - impulse_scale * old_imp
         new_imp = old_imp + imp; new_imp = 0.0 if new_imp < 0.0
         j[:lower_impulse] = new_imp; imp = new_imp - old_imp
-        wa -= iA * imp; wb += iB * imp
+        wa -= ia * imp; wb += ib * imp
         # upper (sign flipped)
         c = j[:upper_angle] - joint_angle
         bias = 0.0; mass_scale = 1.0; impulse_scale = 0.0
@@ -2526,7 +2520,7 @@ module Joints
         imp = -mass_scale * j[:axial_mass] * (cdot + bias) - impulse_scale * old_imp
         new_imp = old_imp + imp; new_imp = 0.0 if new_imp < 0.0
         j[:upper_impulse] = new_imp; imp = new_imp - old_imp
-        wa += iA * imp; wb -= iB * imp
+        wa += ia * imp; wb -= ib * imp
       end
       # point-to-point
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
@@ -2542,9 +2536,9 @@ module Joints
         bias_x = cs[:bias_rate] * sep_x; bias_y = cs[:bias_rate] * sep_y
         mass_scale = cs[:mass_scale]; impulse_scale = cs[:impulse_scale]
       end
-      k_xx = mA + mB + ray * ray * iA + rby * rby * iB
-      k_xy = -ray * rax * iA - rby * rbx * iB
-      k_yy = mA + mB + rax * rax * iA + rbx * rbx * iB
+      k_xx = ma + mb + ray * ray * ia + rby * rby * ib
+      k_xy = -ray * rax * ia - rby * rbx * ib
+      k_yy = ma + mb + rax * rax * ia + rbx * rbx * ib
       rhs_x = cdot_x + bias_x; rhs_y = cdot_y + bias_y
       det = k_xx * k_yy - k_xy * k_xy
       det = det != 0.0 ? 1.0 / det : 0.0
@@ -2553,14 +2547,14 @@ module Joints
       ix = -mass_scale * bx - impulse_scale * j[:linear_impulse_x]
       iy = -mass_scale * by - impulse_scale * j[:linear_impulse_y]
       j[:linear_impulse_x] += ix; j[:linear_impulse_y] += iy
-      vax -= mA * ix; vay -= mA * iy; wa -= iA * (rax * iy - ray * ix)
-      vbx += mB * ix; vby += mB * iy; wb += iB * (rbx * iy - rby * ix)
+      vax -= ma * ix; vay -= ma * iy; wa -= ia * (rax * iy - ray * ix)
+      vbx += mb * ix; vby += mb * iy; wb += ib * (rbx * iy - rby * ix)
       ba[:vx] = vax; ba[:vy] = vay; ba[:w] = wa if ba[:type] == :dynamic
       bb[:vx] = vbx; bb[:vy] = vby; bb[:w] = wb if bb[:type] == :dynamic
     end
 
     def solve_prismatic j, ba, bb, h, inv_h, use_bias, cs
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       vax = ba[:vx]; vay = ba[:vy]; wa = ba[:w]
       vbx = bb[:vx]; vby = bb[:vy]; wb = bb[:w]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
@@ -2586,7 +2580,7 @@ module Joints
       translation = ax_x * dx + ax_y * dy
       a1 = (dx + rax) * ax_y - (dy + ray) * ax_x
       a2 = rbx * ax_y - rby * ax_x
-      k = mA + mB + iA * a1 * a1 + iB * a2 * a2
+      k = ma + mb + ia * a1 * a1 + ib * a2 * a2
       axial_mass = k > 0.0 ? 1.0 / k : 0.0
       softness = cs
       # spring
@@ -2599,8 +2593,8 @@ module Joints
         imp = -ms * axial_mass * (cdot + bias) - is * j[:spring_impulse]
         j[:spring_impulse] += imp
         ppx = imp * ax_x; ppy = imp * ax_y
-        vax -= mA * ppx; vay -= mA * ppy; wa -= iA * imp * a1
-        vbx += mB * ppx; vby += mB * ppy; wb += iB * imp * a2
+        vax -= ma * ppx; vay -= ma * ppy; wa -= ia * imp * a1
+        vbx += mb * ppx; vby += mb * ppy; wb += ib * imp * a2
       end
       # motor
       if j[:enable_motor]
@@ -2612,8 +2606,8 @@ module Joints
         new_imp = -max_imp if new_imp < -max_imp; new_imp = max_imp if new_imp > max_imp
         j[:motor_impulse] = new_imp; imp = new_imp - old_imp
         ppx = imp * ax_x; ppy = imp * ax_y
-        vax -= mA * ppx; vay -= mA * ppy; wa -= iA * imp * a1
-        vbx += mB * ppx; vby += mB * ppy; wb += iB * imp * a2
+        vax -= ma * ppx; vay -= ma * ppy; wa -= ia * imp * a1
+        vbx += mb * ppx; vby += mb * ppy; wb += ib * imp * a2
       end
       # limits
       if j[:enable_limit]
@@ -2631,8 +2625,8 @@ module Joints
         new_imp = old_imp + imp; new_imp = 0.0 if new_imp < 0.0
         j[:lower_impulse] = new_imp; imp = new_imp - old_imp
         ppx = imp * ax_x; ppy = imp * ax_y
-        vax -= mA * ppx; vay -= mA * ppy; wa -= iA * imp * a1
-        vbx += mB * ppx; vby += mB * ppy; wb += iB * imp * a2
+        vax -= ma * ppx; vay -= ma * ppy; wa -= ia * imp * a1
+        vbx += mb * ppx; vby += mb * ppy; wb += ib * imp * a2
         # upper (sign flipped)
         c = j[:upper_translation] - translation
         bias = 0.0; mass_scale = 1.0; impulse_scale = 0.0
@@ -2647,8 +2641,8 @@ module Joints
         new_imp = old_imp + imp; new_imp = 0.0 if new_imp < 0.0
         j[:upper_impulse] = new_imp; imp = new_imp - old_imp
         ppx = imp * ax_x; ppy = imp * ax_y
-        vax += mA * ppx; vay += mA * ppy; wa += iA * imp * a1
-        vbx -= mB * ppx; vby -= mB * ppy; wb -= iB * imp * a2
+        vax += ma * ppx; vay += ma * ppy; wa += ia * imp * a1
+        vbx -= mb * ppx; vby -= mb * ppy; wb -= ib * imp * a2
       end
       # perpendicular + angle block solve
       px_x = -ax_y; px_y = ax_x
@@ -2663,9 +2657,9 @@ module Joints
         bias_x = softness[:bias_rate] * c_x; bias_y = softness[:bias_rate] * c_y
         mass_scale = softness[:mass_scale]; impulse_scale = softness[:impulse_scale]
       end
-      k11 = mA + mB + iA * s1 * s1 + iB * s2 * s2
-      k12 = iA * s1 + iB * s2
-      k22 = iA + iB; k22 = 1.0 if k22 == 0.0
+      k11 = ma + mb + ia * s1 * s1 + ib * s2 * s2
+      k12 = ia * s1 + ib * s2
+      k22 = ia + ib; k22 = 1.0 if k22 == 0.0
       rhs_x = cdot_x + bias_x; rhs_y = cdot_y + bias_y
       det = k11 * k22 - k12 * k12
       det = det != 0.0 ? 1.0 / det : 0.0
@@ -2676,14 +2670,14 @@ module Joints
       j[:impulse_x] += dix; j[:impulse_y] += diy
       ppx = dix * px_x; ppy = dix * px_y
       la = dix * s1 + diy; lb = dix * s2 + diy
-      vax -= mA * ppx; vay -= mA * ppy; wa -= iA * la
-      vbx += mB * ppx; vby += mB * ppy; wb += iB * lb
+      vax -= ma * ppx; vay -= ma * ppy; wa -= ia * la
+      vbx += mb * ppx; vby += mb * ppy; wb += ib * lb
       ba[:vx] = vax; ba[:vy] = vay; ba[:w] = wa if ba[:type] == :dynamic
       bb[:vx] = vbx; bb[:vy] = vby; bb[:w] = wb if bb[:type] == :dynamic
     end
 
     def solve_weld j, ba, bb, use_bias
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       vax = ba[:vx]; vay = ba[:vy]; wa = ba[:w]
       vbx = bb[:vx]; vby = bb[:vy]; wb = bb[:w]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
@@ -2704,7 +2698,7 @@ module Joints
       cdot = wb - wa
       imp = -a_ms * j[:axial_mass] * (cdot + a_bias) - a_is * j[:angular_impulse]
       j[:angular_impulse] += imp
-      wa -= iA * imp; wb += iB * imp
+      wa -= ia * imp; wb += ib * imp
       # linear
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
       ray = sin_da_a * j[:frame_ax] + cos_da_a * j[:frame_ay]
@@ -2720,9 +2714,9 @@ module Joints
       end
       cdot_x = (vbx - wb * rby) - (vax - wa * ray)
       cdot_y = (vby + wb * rbx) - (vay + wa * rax)
-      k_xx = mA + mB + ray * ray * iA + rby * rby * iB
-      k_xy = -ray * rax * iA - rby * rbx * iB
-      k_yy = mA + mB + rax * rax * iA + rbx * rbx * iB
+      k_xx = ma + mb + ray * ray * ia + rby * rby * ib
+      k_xy = -ray * rax * ia - rby * rbx * ib
+      k_yy = ma + mb + rax * rax * ia + rbx * rbx * ib
       rhs_x = cdot_x + bias_x; rhs_y = cdot_y + bias_y
       det = k_xx * k_yy - k_xy * k_xy
       det = det != 0.0 ? 1.0 / det : 0.0
@@ -2731,19 +2725,19 @@ module Joints
       ix = -l_ms * bx - l_is * j[:linear_impulse_x]
       iy = -l_ms * by - l_is * j[:linear_impulse_y]
       j[:linear_impulse_x] += ix; j[:linear_impulse_y] += iy
-      vax -= mA * ix; vay -= mA * iy; wa -= iA * (rax * iy - ray * ix)
-      vbx += mB * ix; vby += mB * iy; wb += iB * (rbx * iy - rby * ix)
+      vax -= ma * ix; vay -= ma * iy; wa -= ia * (rax * iy - ray * ix)
+      vbx += mb * ix; vby += mb * iy; wb += ib * (rbx * iy - rby * ix)
       ba[:vx] = vax; ba[:vy] = vay; ba[:w] = wa if ba[:type] == :dynamic
       bb[:vx] = vbx; bb[:vy] = vby; bb[:w] = wb if bb[:type] == :dynamic
     end
 
     def solve_wheel j, ba, bb, h, inv_h, use_bias, cs
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       vax = ba[:vx]; vay = ba[:vy]; wa = ba[:w]
       vbx = bb[:vx]; vby = bb[:vy]; wb = bb[:w]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
       cos_da_b = bb[:cos_da]; sin_da_b = bb[:sin_da]
-      fixed_rot = (iA + iB == 0.0)
+      fixed_rot = (ia + ib == 0.0)
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
       ray = sin_da_a * j[:frame_ax] + cos_da_a * j[:frame_ay]
       rbx = cos_da_b * j[:frame_bx] - sin_da_b * j[:frame_by]
@@ -2764,7 +2758,7 @@ module Joints
         new_imp = old_imp + imp
         new_imp = -max_imp if new_imp < -max_imp; new_imp = max_imp if new_imp > max_imp
         j[:motor_impulse] = new_imp; imp = new_imp - old_imp
-        wa -= iA * imp; wb += iB * imp
+        wa -= ia * imp; wb += ib * imp
       end
       # spring
       if j[:enable_spring]
@@ -2775,8 +2769,8 @@ module Joints
         imp = -ms * j[:axial_mass] * (cdot + bias) - is_s * j[:spring_impulse]
         j[:spring_impulse] += imp
         ppx = imp * ax_x; ppy = imp * ax_y
-        vax -= mA * ppx; vay -= mA * ppy; wa -= iA * imp * a1
-        vbx += mB * ppx; vby += mB * ppy; wb += iB * imp * a2
+        vax -= ma * ppx; vay -= ma * ppy; wa -= ia * imp * a1
+        vbx += mb * ppx; vby += mb * ppy; wb += ib * imp * a2
       end
       # limits
       if j[:enable_limit]
@@ -2794,8 +2788,8 @@ module Joints
         new_imp = old_imp + imp; new_imp = 0.0 if new_imp < 0.0
         j[:lower_impulse] = new_imp; imp = new_imp - old_imp
         ppx = imp * ax_x; ppy = imp * ax_y
-        vax -= mA * ppx; vay -= mA * ppy; wa -= iA * imp * a1
-        vbx += mB * ppx; vby += mB * ppy; wb += iB * imp * a2
+        vax -= ma * ppx; vay -= ma * ppy; wa -= ia * imp * a1
+        vbx += mb * ppx; vby += mb * ppy; wb += ib * imp * a2
         # upper (sign flipped)
         c = j[:upper_translation] - translation
         bias = 0.0; mass_scale = 1.0; impulse_scale = 0.0
@@ -2810,8 +2804,8 @@ module Joints
         new_imp = old_imp + imp; new_imp = 0.0 if new_imp < 0.0
         j[:upper_impulse] = new_imp; imp = new_imp - old_imp
         ppx = imp * ax_x; ppy = imp * ax_y
-        vax += mA * ppx; vay += mA * ppy; wa += iA * imp * a1
-        vbx -= mB * ppx; vby -= mB * ppy; wb -= iB * imp * a2
+        vax += ma * ppx; vay += ma * ppy; wa += ia * imp * a1
+        vbx -= mb * ppx; vby -= mb * ppy; wb -= ib * imp * a2
       end
       # point-to-line
       px_x = -ax_y; px_y = ax_x
@@ -2826,14 +2820,14 @@ module Joints
       imp = -mass_scale * j[:perp_mass] * (cdot + bias) - impulse_scale * j[:perp_impulse]
       j[:perp_impulse] += imp
       ppx = imp * px_x; ppy = imp * px_y
-      vax -= mA * ppx; vay -= mA * ppy; wa -= iA * imp * s1
-      vbx += mB * ppx; vby += mB * ppy; wb += iB * imp * s2
+      vax -= ma * ppx; vay -= ma * ppy; wa -= ia * imp * s1
+      vbx += mb * ppx; vby += mb * ppy; wb += ib * imp * s2
       ba[:vx] = vax; ba[:vy] = vay; ba[:w] = wa if ba[:type] == :dynamic
       bb[:vx] = vbx; bb[:vy] = vby; bb[:w] = wb if bb[:type] == :dynamic
     end
 
     def solve_motor j, ba, bb, h
-      mA = j[:inv_mass_a]; mB = j[:inv_mass_b]; iA = j[:inv_inertia_a]; iB = j[:inv_inertia_b]
+      ma = j[:inv_mass_a]; mb = j[:inv_mass_b]; ia = j[:inv_inertia_a]; ib = j[:inv_inertia_b]
       vax = ba[:vx]; vay = ba[:vy]; wa = ba[:w]
       vbx = bb[:vx]; vby = bb[:vy]; wb = bb[:w]
       cos_da_a = ba[:cos_da]; sin_da_a = ba[:sin_da]
@@ -2856,7 +2850,7 @@ module Joints
         new_imp = old_imp + imp
         new_imp = -max_imp if new_imp < -max_imp; new_imp = max_imp if new_imp > max_imp
         j[:angular_spring_impulse] = new_imp; imp = new_imp - old_imp
-        wa -= iA * imp; wb += iB * imp
+        wa -= ia * imp; wb += ib * imp
       end
       # angular velocity
       if j[:max_velocity_torque] > 0.0
@@ -2867,7 +2861,7 @@ module Joints
         new_imp = old_imp + imp
         new_imp = -max_imp if new_imp < -max_imp; new_imp = max_imp if new_imp > max_imp
         j[:angular_velocity_impulse] = new_imp; imp = new_imp - old_imp
-        wa -= iA * imp; wb += iB * imp
+        wa -= ia * imp; wb += ib * imp
       end
       rax = cos_da_a * j[:frame_ax] - sin_da_a * j[:frame_ay]
       ray = sin_da_a * j[:frame_ax] + cos_da_a * j[:frame_ay]
@@ -2883,9 +2877,9 @@ module Joints
         cdot_x = (vbx - wb * rby) - (vax - wa * ray) + bias_x
         cdot_y = (vby + wb * rbx) - (vay + wa * rax) + bias_y
         # recompute 2x2 inverse (per box2d)
-        k_xx = mA + mB + ray * ray * iA + rby * rby * iB
-        k_xy = -ray * rax * iA - rby * rbx * iB
-        k_yy = mA + mB + rax * rax * iA + rbx * rbx * iB
+        k_xx = ma + mb + ray * ray * ia + rby * rby * ib
+        k_xy = -ray * rax * ia - rby * rbx * ib
+        k_yy = ma + mb + rax * rax * ia + rbx * rbx * ib
         det = k_xx * k_yy - k_xy * k_xy
         det = det != 0.0 ? 1.0 / det : 0.0
         bx = det * (k_yy * cdot_x - k_xy * cdot_y)
@@ -2901,8 +2895,8 @@ module Joints
         end
         j[:linear_spring_impulse_x] = new_ix; j[:linear_spring_impulse_y] = new_iy
         ix = new_ix - old_ix; iy = new_iy - old_iy
-        vax -= mA * ix; vay -= mA * iy; wa -= iA * (rax * iy - ray * ix)
-        vbx += mB * ix; vby += mB * iy; wb += iB * (rbx * iy - rby * ix)
+        vax -= ma * ix; vay -= ma * iy; wa -= ia * (rax * iy - ray * ix)
+        vbx += mb * ix; vby += mb * iy; wb += ib * (rbx * iy - rby * ix)
       end
       # linear velocity
       if j[:max_velocity_force] > 0.0
@@ -2922,8 +2916,8 @@ module Joints
         end
         j[:linear_velocity_impulse_x] = new_ix; j[:linear_velocity_impulse_y] = new_iy
         ix = new_ix - old_ix; iy = new_iy - old_iy
-        vax -= mA * ix; vay -= mA * iy; wa -= iA * (rax * iy - ray * ix)
-        vbx += mB * ix; vby += mB * iy; wb += iB * (rbx * iy - rby * ix)
+        vax -= ma * ix; vay -= ma * iy; wa -= ia * (rax * iy - ray * ix)
+        vbx += mb * ix; vby += mb * iy; wb += ib * (rbx * iy - rby * ix)
       end
       ba[:vx] = vax; ba[:vy] = vay; ba[:w] = wa if ba[:type] == :dynamic
       bb[:vx] = vbx; bb[:vy] = vby; bb[:w] = wb if bb[:type] == :dynamic

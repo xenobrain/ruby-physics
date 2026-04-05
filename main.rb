@@ -1037,8 +1037,8 @@ def tick_joints_demo args
   # wheel demo: arrow keys control motor + direct chassis force
   if args.state.joint_scene == 4 && args.state.wheel_chassis
     chassis = args.state.wheel_chassis
-    if args.inputs.keyboard.right || args.inputs.keyboard.left
-      dir = args.inputs.keyboard.right ? 1.0 : -1.0
+    if args.inputs.right || args.inputs.left
+      dir = args.inputs.left_right_perc
       spd = -dir * 200.0
       w[:joints].each do |j|
         next unless j[:type] == :wheel

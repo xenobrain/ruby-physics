@@ -49,11 +49,11 @@ end
 def tick args
   Physics.tick args.state.world
 
-  b = args.state.ball
+  ball = args.state.ball
   args.outputs.sprites << {
-    x: b[:x] - 20, y: b[:y] - 20, w: 40, h: 40,
+    x: ball[:x] - 20, y: ball[:y] - 20, w: 40, h: 40,
     path: 'sprites/circle/blue.png',
-    angle: b[:angle] * 180.0 / Math::PI
+    angle: ball[:angle] * 180.0 / Math::PI
   }
 end
 ```
@@ -90,7 +90,7 @@ Physics.set_broadphase_cell_size w, 128
 
 Sets the spatial hash cell size used for broadphase collision detection. The value is rounded up to the nearest power of 2.
 
-```rubyAdd
+```ruby
 Physics.tick w
 ```
 
@@ -99,7 +99,7 @@ Advances the simulation by one time step. Call once per frame.
 ### Bodies
 
 ```ruby
-body = Physics.create_body w,
+b = Physics.create_body w,
   x: 0.0, y: 0.0, angle: 0.0,
   type: :dynamic,              # :dynamic, :static, or :kinematic
   gravity_scale: 1.0,
@@ -126,29 +126,29 @@ All shapes are attached to a body via `body_id`. Dynamic bodies automatically co
 
 ```ruby
 Physics.create_circle w,
-  body_id: body[:id],
+  body_id: b[:id],
   radius: 20.0,
   offset_x: 0.0, offset_y: 0.0,  # local offset from body center
   density: 1.0, friction: 0.6, restitution: 0.0
 
 Physics.create_box w,
-  body_id: body[:id],
+  body_id: b[:id],
   w: 40, h: 20,
   density: 1.0, friction: 0.6, restitution: 0.0
 
 Physics.create_polygon w,
-  body_id: body[:id],
+  body_id: b[:id],
   vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
   density: 1.0, friction: 0.6, restitution: 0.0
 
 Physics.create_capsule w,
-  body_id: body[:id],
+  body_id: b[:id],
   x1: -20, y1: 0, x2: 20, y2: 0,  # local endpoints
   radius: 8.0,
   density: 1.0, friction: 0.6, restitution: 0.0
 
 Physics.create_segment w,
-  body_id: body[:id],
+  body_id: b[:id],
   x1: -100, y1: 0, x2: 100, y2: 0,  # local endpoints (zero-thickness line)
   friction: 0.6, restitution: 0.0
 ```
@@ -156,21 +156,21 @@ Physics.create_segment w,
 ### Forces and Impulses
 
 ```ruby
-Physics.apply_force w, body[:id], fx, fy
-Physics.apply_impulse w, body[:id], ix, iy           # at center of mass
-Physics.apply_impulse w, body[:id], ix, iy, px, py   # at world point
-Physics.apply_torque w, body[:id], torque
-Physics.set_velocity w, body[:id], vx, vy
-Physics.set_mass w, body[:id], mass
-Physics.set_inertia w, body[:id], inertia
+Physics.apply_force w, b[:id], fx, fy
+Physics.apply_impulse w, b[:id], ix, iy           # at center of mass
+Physics.apply_impulse w, b[:id], ix, iy, px, py   # at world point
+Physics.apply_torque w, b[:id], torque
+Physics.set_velocity w, b[:id], vx, vy
+Physics.set_mass w, b[:id], mass
+Physics.set_inertia w, b[:id], inertia
 ```
 
 ### Queries
 
 ```ruby
-body = Physics.find_body w, body_id
-shape = Physics.find_shape w, shape_id
-body = Physics.body_at_point w, px, py  # returns first body at world point, or nil
+b = Physics.find_body w, body_id
+s = Physics.find_shape w, shape_id
+b = Physics.body_at_point w, px, py  # returns first body at world point, or nil
 ```
 
 ### Joints
@@ -179,7 +179,7 @@ All joints connect two bodies and support optional springs, motors, and limits.
 
 ```ruby
 Physics::Joints.create_distance_joint w,
-  body_a_id: a[:id], body_b_id: b[:id],
+  body_a_id: ba[:id], body_b_id: bb[:id],
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
   length: nil,                    # auto-computed from initial positions if nil
@@ -188,7 +188,7 @@ Physics::Joints.create_distance_joint w,
   enable_motor: false, motor_speed: 0.0, max_motor_force: 0.0
 
 Physics::Joints.create_revolute_joint w,
-  body_a_id: a[:id], body_b_id: b[:id],
+  body_a_id: ba[:id], body_b_id: bb[:id],
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
   enable_spring: false, hertz: 0.0, damping_ratio: 0.0, target_angle: 0.0,
@@ -196,28 +196,28 @@ Physics::Joints.create_revolute_joint w,
   enable_motor: false, motor_speed: 0.0, max_motor_torque: 0.0
 
 Physics::Joints.create_prismatic_joint w,
-  body_a_id: a[:id], body_b_id: b[:id],
+  body_a_id: ba[:id], body_b_id: bb[:id],
   local_axis_ax: 1.0, local_axis_ay: 0.0,  # slide axis in body A's local space
   enable_spring: false, hertz: 0.0, damping_ratio: 0.0,
   enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
   enable_motor: false, motor_speed: 0.0, max_motor_force: 0.0
 
 Physics::Joints.create_weld_joint w,
-  body_a_id: a[:id], body_b_id: b[:id],
+  body_a_id: ba[:id], body_b_id: bb[:id],
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
   linear_hertz: 0.0, linear_damping_ratio: 0.0,    # 0 = rigid
   angular_hertz: 0.0, angular_damping_ratio: 0.0
 
 Physics::Joints.create_wheel_joint w,
-  body_a_id: a[:id], body_b_id: b[:id],
+  body_a_id: ba[:id], body_b_id: bb[:id],
   local_axis_ax: 0.0, local_axis_ay: 1.0,  # suspension axis
   enable_spring: true, hertz: 1.0, damping_ratio: 0.7,
   enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
   enable_motor: false, motor_speed: 0.0, max_motor_torque: 0.0
 
 Physics::Joints.create_motor_joint w,
-  body_a_id: a[:id], body_b_id: b[:id],
+  body_a_id: ba[:id], body_b_id: bb[:id],
   linear_hertz: 1.0, linear_damping_ratio: 1.0,
   angular_hertz: 1.0, angular_damping_ratio: 1.0,
   max_spring_force: 0.0, max_spring_torque: 0.0
@@ -313,7 +313,5 @@ The `app/main.rb` and `app/stress.rb` files contain several interactive demos:
 ## License
 
 Unlicense / Public Domain
-
-
 
 *The author would like to acknowledge and thank Erin Catto and Scott Lembcke, whose work on Box2D and Chipmunk respectively advanced the state of the art in real-time physics simulation. This library would not have been possible without their contributions.*
