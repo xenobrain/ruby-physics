@@ -19,10 +19,10 @@ convex decomposition, and procedural shattering
 
 ## Installation
 
-Copy `app/physics.rb` into your DragonRuby project and require it:
+Copy `physics.rb` into your DragonRuby project and require it:
 
 ```ruby
-require 'app/physics.rb'
+require_relative 'physics.rb'
 ```
 
 ## Quick Start
