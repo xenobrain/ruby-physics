@@ -138,7 +138,7 @@ Physics.create_box w,
   body_id: b[:id],
   w: 40, h: 20,
   density: 1.0, friction: 0.6, restitution: 0.0,
-  layer: Physics::LAYERS[:terrain], mask: 0xFFFF  # 0xFFFF = collide with everything (default)
+  layer: Physics::LAYERS[:terrain]  # omit mask: to collide with everything
 
 Physics.create_polygon w,
   body_id: b[:id],
@@ -157,7 +157,7 @@ Physics.create_segment w,
   friction: 0.6, restitution: 0.0
 ```
 
-When `layer:` and `mask:` are omitted they default to `0xFFFF` (collide with everything).
+Both `layer:` and `mask:` are optional — omit either to collide with everything.
 
 ### Forces and Impulses
 
