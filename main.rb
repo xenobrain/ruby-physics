@@ -15,7 +15,7 @@ DRAGON_FRAMES = (0..5).map { |i| "sprites/misc/dragon-#{i}.png" }
 BLOCK_COLORS = %w[red orange yellow blue green indigo]
 ENEMY_COLORS = %w[red blue green orange violet]
 SANDBOX_COLORS = %w[red orange yellow green blue indigo violet]
-SPAWN_MODES = [:circle, :box, :capsule]
+SPAWN_MODES = [:circle, :box, :capsule, :polygon]
 EXPLOSION_FRAMES = (0..6).map { |i| "sprites/misc/explosion-#{i}.png" }
 
 module Game
@@ -86,7 +86,9 @@ end
 
 # Game Mode
 def setup_level args
-  w = Physics.create_world old: args.state.world
+  w = Physics.create_world
+  Physics.set_broadphase_cell_size w, 64
+
   args.state.world = w
   Game.init
   Physics.on_contact_begin w, Game, :on_contact_begin
@@ -243,7 +245,7 @@ def tick_game args
 
   load_dragon w, args if gs == :next && (args.state.follow_timer += 1) > 30
 
-  Physics.step w
+  Physics.tick w
 
   args.state.enemy_bodies.each do |e|
     next unless e[:alive]
@@ -300,7 +302,7 @@ end
 
 # Sandbox Mode
 def setup_sandbox args
-  w = Physics.create_world old: args.state.world
+  w = Physics.create_world
   args.state.world = w
   args.state.spawn_idx = 0
   args.state.debug_draw = false
@@ -323,6 +325,7 @@ def setup_sandbox args
   5.times { sb_circle w, 200 + rand(880), 400 + rand(250) }
   5.times { sb_box w, 200 + rand(880), 400 + rand(250) }
   5.times { sb_capsule w, 200 + rand(880), 400 + rand(250) }
+  5.times { sb_polygon w, 200 + rand(880), 400 + rand(250) }
   Physics.transform_shapes w
 end
 
@@ -339,6 +342,17 @@ def sb_capsule w, x, y
   b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
   Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
 end
+def sb_polygon w, x, y
+  n = 5 + rand(4)
+  verts = []
+  n.times do |i|
+    a = (2.0 * Math::PI * i) / n + (rand - 0.5) * 0.4
+    r = 12 + rand(14)
+    verts << r * Math.cos(a) << r * Math.sin(a)
+  end
+  b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
+  Physics.create_polygon w, body_id: b[:id], vertices: verts, density: 0.7, friction: 0.6, restitution: 0.2
+end
 
 def tick_sandbox args
   w = args.state.world
@@ -354,9 +368,10 @@ def tick_sandbox args
     when :box then sb_box w, mx, my
     when :circle then sb_circle w, mx, my
     when :capsule then sb_capsule w, mx, my
+    when :polygon then sb_polygon w, mx, my
     end
   end
-  Physics.step w
+  Physics.tick w
 
   shapes = w[:shapes]; i = 0
   while i < shapes.length
@@ -371,11 +386,30 @@ def tick_sandbox args
         wv = s[:world_vertices]; c = s[:count]; vi = 0
         while vi < c; ni = vi + 1 < c ? vi + 1 : 0; vi2 = vi * 2; ni2 = ni * 2
           args.outputs.lines << { x: wv[vi2], y: wv[vi2 + 1], x2: wv[ni2], y2: wv[ni2 + 1], r: 200, g: 200, b: 200 }; vi += 1; end
-      else
+      elsif s[:count] == 4
         v = s[:vertices]; x0 = 1e18; x1 = -1e18; y0 = 1e18; y1 = -1e18; vi = 0
         while vi < s[:count]; vi2 = vi * 2; lx = v[vi2]; ly = v[vi2 + 1]
           x0 = lx if lx < x0; x1 = lx if lx > x1; y0 = ly if ly < y0; y1 = ly if ly > y1; vi += 1; end
         args.outputs.sprites << { x: b[:x] - (x1-x0)*0.5, y: b[:y] - (y1-y0)*0.5, w: x1-x0, h: y1-y0, path: "sprites/square/#{color}.png", angle: ad }
+      else
+        wv = s[:world_vertices]; c = s[:count]
+        x0 = 1e18; x1 = -1e18; y0 = 1e18; y1 = -1e18; cx = 0.0; cy = 0.0; vi = 0
+        while vi < c; vi2 = vi * 2; wx = wv[vi2]; wy = wv[vi2 + 1]
+          cx += wx; cy += wy
+          x0 = wx if wx < x0; x1 = wx if wx > x1; y0 = wy if wy < y0; y1 = wy if wy > y1; vi += 1; end
+        cx /= c; cy /= c; bw = x1 - x0; bh = y1 - y0
+        uw = 80.0 / (bw == 0 ? 1.0 : bw); uh = 80.0 / (bh == 0 ? 1.0 : bh)
+        tris = []; vi = 0
+        while vi < c
+          ni = vi + 1 < c ? vi + 1 : 0; vi2 = vi * 2; ni2 = ni * 2
+          tris << { x: cx, y: cy, x2: wv[vi2], y2: wv[vi2 + 1], x3: wv[ni2], y3: wv[ni2 + 1],
+                    source_x: (cx - x0) * uw, source_y: (cy - y0) * uh,
+                    source_x2: (wv[vi2] - x0) * uw, source_y2: (wv[vi2 + 1] - y0) * uh,
+                    source_x3: (wv[ni2] - x0) * uw, source_y3: (wv[ni2 + 1] - y0) * uh,
+                    path: "sprites/square/#{color}.png" }
+          vi += 1
+        end
+        args.outputs.sprites << tris
       end
     elsif s[:type] == :capsule
       ca = Math.cos b[:angle]; sa_v = Math.sin b[:angle]; bx = b[:x]; by = b[:y]; r = s[:radius]; d = r*2
@@ -469,7 +503,7 @@ module CallbackDemo
 end
 
 def setup_callback_demo args
-  w = Physics.create_world old: args.state.world
+  w = Physics.create_world
   args.state.world = w
   args.state.spawn_idx = 0
   args.state.debug_draw = false
@@ -512,10 +546,11 @@ def tick_callback_demo args
     when :box then sb_box w, mx, my
     when :circle then sb_circle w, mx, my
     when :capsule then sb_capsule w, mx, my
+    when :polygon then sb_polygon w, mx, my
     end
   end
 
-  Physics.step w
+  Physics.tick w
 
   args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 25, g: 25, b: 35 }
   args.outputs.solids << { x: 0, y: 0, w: 1280, h: 20, r: 50, g: 55, b: 65 }
@@ -533,11 +568,30 @@ def tick_callback_demo args
         wv = s[:world_vertices]; c = s[:count]; vi = 0
         while vi < c; ni = vi + 1 < c ? vi + 1 : 0; vi2 = vi * 2; ni2 = ni * 2
           args.outputs.lines << { x: wv[vi2], y: wv[vi2 + 1], x2: wv[ni2], y2: wv[ni2 + 1], r: 80, g: 80, b: 100 }; vi += 1; end
-      else
+      elsif s[:count] == 4
         v = s[:vertices]; x0 = 1e18; x1 = -1e18; y0 = 1e18; y1 = -1e18; vi = 0
         while vi < s[:count]; vi2 = vi * 2; lx = v[vi2]; ly = v[vi2 + 1]
           x0 = lx if lx < x0; x1 = lx if lx > x1; y0 = ly if ly < y0; y1 = ly if ly > y1; vi += 1; end
         args.outputs.sprites << { x: b[:x] - (x1-x0)*0.5, y: b[:y] - (y1-y0)*0.5, w: x1-x0, h: y1-y0, path: "sprites/square/#{color}.png", angle: ad }
+      else
+        wv = s[:world_vertices]; c = s[:count]
+        x0 = 1e18; x1 = -1e18; y0 = 1e18; y1 = -1e18; cx = 0.0; cy = 0.0; vi = 0
+        while vi < c; vi2 = vi * 2; wx = wv[vi2]; wy = wv[vi2 + 1]
+          cx += wx; cy += wy
+          x0 = wx if wx < x0; x1 = wx if wx > x1; y0 = wy if wy < y0; y1 = wy if wy > y1; vi += 1; end
+        cx /= c; cy /= c; bw = x1 - x0; bh = y1 - y0
+        uw = 80.0 / (bw == 0 ? 1.0 : bw); uh = 80.0 / (bh == 0 ? 1.0 : bh)
+        tris = []; vi = 0
+        while vi < c
+          ni = vi + 1 < c ? vi + 1 : 0; vi2 = vi * 2; ni2 = ni * 2
+          tris << { x: cx, y: cy, x2: wv[vi2], y2: wv[vi2 + 1], x3: wv[ni2], y3: wv[ni2 + 1],
+                    source_x: (cx - x0) * uw, source_y: (cy - y0) * uh,
+                    source_x2: (wv[vi2] - x0) * uw, source_y2: (wv[vi2 + 1] - y0) * uh,
+                    source_x3: (wv[ni2] - x0) * uw, source_y3: (wv[ni2 + 1] - y0) * uh,
+                    path: "sprites/square/#{color}.png" }
+          vi += 1
+        end
+        args.outputs.sprites << tris
       end
     elsif s[:type] == :capsule
       ca = Math.cos b[:angle]; sa_v = Math.sin b[:angle]; bx = b[:x]; by = b[:y]; r = s[:radius]; d = r*2
@@ -637,7 +691,7 @@ def setup_joints_demo args
 end
 
 def build_joint_scene args, idx
-  w = Physics.create_world old: args.state.world
+  w = Physics.create_world
   args.state.world = w
   args.state.joint_bodies = []
   args.state.joint_list = []
@@ -1019,7 +1073,7 @@ def tick_joints_demo args
     args.state.joint_bodies << { body: ball, radius: 14, color: %w[red orange yellow green blue indigo violet][rand(7)] }
   end
 
-  Physics.step w
+  Physics.tick w
 
   # render
   args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 40, g: 44, b: 52 }

@@ -4,14 +4,17 @@ A single-file 2D rigid-body physics engine for [DragonRuby Game Toolkit](https:/
 
 Inspired by [Box2D](https://box2d.org) and [Chipmunk2D](https://chipmunk-physics.net). Built for games.
 
+[ruby-triangles](https://github.com/xenobrain/ruby-triangles) is a companion library that provides triangulation,
+convex decomposition, and procedural shattering
+
 ## Features
 
 - **Shapes** — circle, convex polygon, capsule, segment
 - **Collision detection** — SAT with polygon clipping, all shape-pair combinations
 - **Constraint solver** — TGS-Soft iterative solver with sub-stepping and warm-starting
 - **Joints** — distance, revolute, prismatic, weld, wheel, motor
-- **Broadphase** — spatial hash with separate static/dynamic grids
-- **Sleeping** — island-based sleeping with automatic wake on contact
+- **Broadphase** — spatial hash, tunable with pow2 cell size
+- **Sleeping** — island-based sleeping
 - **Debug drawing** — contact points, AABBs, sleep state visualization
 
 ## Installation
@@ -44,7 +47,7 @@ def boot args
 end
 
 def tick args
-  Physics.step args.state.world
+  Physics.tick args.state.world
 
   b = args.state.ball
   args.outputs.sprites << {
@@ -60,10 +63,10 @@ end
 ### World
 
 ```ruby
-w = Physics.create_world old: nil
+w = Physics.create_world
 ```
 
-Creates a new physics world. Pass `old:` with a previous world to recycle memory allocations (useful on hot-reload).
+Creates a new physics world.
 
 **World configuration** (modify after creation):
 
@@ -82,7 +85,13 @@ Creates a new physics world. Pass `old:` with a previous world to recycle memory
 | `max_linear_speed`       | `40000.0`  | Maximum body speed (pixels/s)        |
 
 ```ruby
-Physics.step w
+Physics.set_broadphase_cell_size w, 128
+```
+
+Sets the spatial hash cell size used for broadphase collision detection. The value is rounded up to the nearest power of 2.
+
+```rubyAdd
+Physics.tick w
 ```
 
 Advances the simulation by one time step. Call once per frame.
@@ -107,9 +116,7 @@ body = Physics.create_body w,
 | `vx`, `vy`       | Linear velocity (pixels/s)               |
 | `w`              | Angular velocity (radians/s)             |
 | `mass`           | Total mass (auto-computed from shapes)   |
-| `inv_mass`       | Inverse mass                             |
 | `inertia`        | Rotational inertia                       |
-| `inv_inertia`    | Inverse inertia                          |
 | `gravity_scale`  | Per-body gravity multiplier              |
 | `sleeping`       | Whether the body is asleep               |
 
@@ -154,6 +161,8 @@ Physics.apply_impulse w, body[:id], ix, iy           # at center of mass
 Physics.apply_impulse w, body[:id], ix, iy, px, py   # at world point
 Physics.apply_torque w, body[:id], torque
 Physics.set_velocity w, body[:id], vx, vy
+Physics.set_mass w, body[:id], mass
+Physics.set_inertia w, body[:id], inertia
 ```
 
 ### Queries
@@ -251,7 +260,7 @@ end
 | `on_contact_end`       | Two shapes separate                      | Stop sounds, clear state     |
 
 **Notes:**
-- Callbacks fire inline during `Physics.step` (inside `find_contacts`). Do not add/remove bodies or shapes inside a callback.
+- Callbacks fire inline during `Physics.tick` (inside `find_contacts`). Do not add/remove bodies or shapes inside a callback.
 - `body_a` owns the lower-ID shape; ordering is deterministic but arbitrary.
 - Multiple shapes between the same two bodies produce separate callbacks.
 - Sleeping contacts: no `persist` or `end` events fire while both bodies sleep.
@@ -280,7 +289,7 @@ Physics::DebugDraw.draw_sleep_state w, args.outputs  # "z" labels on sleeping bo
 Physics.transform_shapes w
 ```
 
-Updates world-space vertices and AABBs for all shapes. Called automatically inside `Physics.step`, but must be called manually after creating shapes and before the first step.
+Updates world-space vertices and AABBs for all shapes. Called automatically inside `Physics.tick`, but must be called manually after creating shapes and before the first step.
 
 ## Demos
 
@@ -298,7 +307,6 @@ The `app/main.rb` and `app/stress.rb` files contain several interactive demos:
 ## Architecture
 
 - **Broadphase**: spatial hash with separate static and dynamic grids. Static grid rebuilds only when bodies sleep/wake.
-- **Narrowphase**: SAT (Separating Axis Theorem)
 - **Solver**: TGS-Soft (Temporal Gauss-Seidel with soft constraints). Sub-stepped velocity integration with warm-started contact and joint impulses, followed by relaxation iterations.
 - **Islands**: union-find grouping of connected bodies via contacts and joints. Islands split via DFS when contacts break. Entire islands sleep/wake as a unit.
 

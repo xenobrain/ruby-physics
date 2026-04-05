@@ -1,11 +1,11 @@
 # Physics.rb — A 2D rigid-body physics engine for DragonRuby Game Toolkit
 #
 # Version: 0.1.0
-# License: MIT
+# License: Unlicense
 # Source:  https://github.com/xenobrain/ruby_physics
 #
 # A single-file 2D physics engine written in pure Ruby. Drop this file into
-# any DragonRuby project and call Physics.create_world / Physics.step.
+# any DragonRuby project and call Physics.create_world / Physics.tick.
 #
 # Features:
 #   - Circle, polygon (convex hull), capsule, and segment shapes
@@ -39,34 +39,19 @@ module Physics
   TWO_PI             = 2.0 * PI
 
   class << self
-    def reuse_hash h
-      if h
-        h.each_value { |v| v.clear if v.is_a? Array }
-        h.clear
-        h
-      else
-        {}
-      end
-    end
-
-    def reuse_array a
-      if a; a.clear; a; else []; end
-    end
-
-    def create_world old: nil
-      ob = old ? old[:broadphase] : nil
+    def create_world
       {
         bodies: [],
         shapes: [],
-        pairs: reuse_hash(old && old[:pairs]),
+        pairs: {},
         broadphase: { cell_size: 64, shift: 6,
-                       static_cells: reuse_hash(ob && ob[:static_cells]),
-                       dynamic_cells: reuse_hash(ob && ob[:dynamic_cells]),
+                       static_cells: {},
+                       dynamic_cells: {},
                        static_dirty: true, static_shape_count: 0,
-                       pool: reuse_array(ob && ob[:pool]),
-                       seen: reuse_hash(ob && ob[:seen]),
-                       candidates: reuse_array(ob && ob[:candidates]),
-                       no_collide: reuse_hash(ob && ob[:no_collide]) },
+                       pool: [],
+                       seen: {},
+                       candidates: [],
+                       no_collide: {} },
         gravity_x: 0.0,
         gravity_y: -980.0,
         dt: 1.0 / 60.0,
@@ -80,7 +65,7 @@ module Physics
         max_linear_speed: 40000.0,
         next_body_id: 0,
         next_shape_id: 0,
-        pair_list: reuse_array(old && old[:pair_list]),
+        pair_list: [],
         contact_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         static_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         joints: [],
@@ -88,7 +73,7 @@ module Physics
         joint_hertz: 60.0,
         joint_damping_ratio: 1.0,
         joint_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
-        islands: reuse_hash(old && old[:islands]),
+        islands: {},
         next_island_id: 0,
         on_contact_begin: nil,
         on_contact_persist: nil,
@@ -371,7 +356,7 @@ module Physics
       world[:shapes][shape_id]
     end
 
-    def step world
+    def tick world
       dt = world[:dt]
       sub_steps = world[:sub_steps]
       h = dt / sub_steps
@@ -431,7 +416,7 @@ module Physics
       Solver.apply_restitution world
       finalize_positions world
 
-      Islands.update world, dt
+      Islands.tick world, dt
 
       i = 0
       while i < bodies.length
@@ -527,6 +512,32 @@ module Physics
       b = find_body world, body_id
       return unless b
       b[:torque] += t.to_f
+      Islands.wake_body world, b if b[:sleeping]
+    end
+
+    def set_broadphase_cell_size world, size
+      size = size.to_i; size = 1 if size < 1
+      pow2 = 1; pow2 <<= 1 while pow2 < size
+      puts "Physics: broadphase cell size set to #{pow2}#{pow2 != size ? " (rounded up from #{size})" : ''}"
+      shift = 0; v = pow2; while v > 1; v >>= 1; shift += 1; end
+      bp = world[:broadphase]
+      bp[:cell_size] = pow2; bp[:shift] = shift
+      bp[:static_cells].clear; bp[:dynamic_cells].clear; bp[:static_dirty] = true
+    end
+
+    def set_mass world, body_id, mass
+      b = find_body world, body_id
+      return unless b
+      mass = mass.to_f; mass = 0.0 if mass < 0.0
+      b[:mass] = mass; b[:inv_mass] = mass > 0.0 ? 1.0 / mass : 0.0
+      Islands.wake_body world, b if b[:sleeping]
+    end
+
+    def set_inertia world, body_id, inertia
+      b = find_body world, body_id
+      return unless b
+      inertia = inertia.to_f; inertia = 0.0 if inertia < 0.0
+      b[:inertia] = inertia; b[:inv_inertia] = inertia > 0.0 ? 1.0 / inertia : 0.0
       Islands.wake_body world, b if b[:sleeping]
     end
 
@@ -790,7 +801,6 @@ module Physics
       end
 
       # narrowphase on candidates
-      # narrowphase on candidates — touching state machine
       ci = 0
       while ci < candidates.length
         lo = candidates[ci]; hi = candidates[ci + 1]; ci += 2
@@ -1018,7 +1028,7 @@ module Collide
       CP_RESULT[0] = p1x + t * ex; CP_RESULT[1] = p1y + t * ey; CP_RESULT[2] = t
     end
 
-    # writes result to CPS_RESULT[0..5] = [pax, pay, pbx, pby, ta, tb]
+    # writes the result to CPS_RESULT[0..5] = [pax, pay, pbx, pby, ta, tb]
     def closest_points_segments a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y
       dx = a1x - b1x; dy = a1y - b1y
       d1x = a2x - a1x; d1y = a2y - a1y
@@ -1081,7 +1091,6 @@ module Collide
       norms[0] = nx; norms[1] = ny; norms[2] = -nx; norms[3] = -ny
       radius
     end
-
 
     # SAT — writes separation and edge index into result[0..1]
     def find_max_separation verts1, norms1, count1, verts2, count2, result
@@ -1328,7 +1337,6 @@ module Collide
       m
     end
 
-
     # Polygon-Circle: SAT face + Voronoi vertex test
     def collide_polygon_circle sp, bp, sc, bc
       verts = sp[:world_vertices]; norms = sp[:world_normals]
@@ -1391,7 +1399,6 @@ module Collide
         MR
       end
     end
-
 
     # Polygon-Capsule
     def collide_polygon_capsule sp, bp, sc, bc
@@ -3138,7 +3145,7 @@ module Islands
       end
     end
 
-    def update world, dt
+    def tick world, dt
       islands = world[:islands]
       dead_ids = nil
       split_ids = nil

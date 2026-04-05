@@ -30,7 +30,7 @@ module StressTest
 
     # Scenario 0: Mass Spawn (300 bodies in tight area
     def setup_mass_spawn args
-      w = Physics.create_world old: args.state.world
+      w = Physics.create_world
       args.state.world = w
 
       floor = Physics.create_body w, x: 640, y: -10, type: :static
@@ -65,7 +65,7 @@ module StressTest
 
     # Scenario 1: Churn (spawn/destroy cycle)
     def setup_churn args
-      w = Physics.create_world old: args.state.world
+      w = Physics.create_world
       args.state.world = w
       make_walls w
       Physics.transform_shapes w
@@ -82,7 +82,7 @@ module StressTest
 
     # Scenario 2: GC Hammer (modest bodies + forced allocation pressure)
     def setup_gc_hammer args
-      w = Physics.create_world old: args.state.world
+      w = Physics.create_world
       args.state.world = w
       make_walls w
 
@@ -155,7 +155,7 @@ module StressTest
       elsif sc == 3
         decomposed_step w
       else
-        Physics.step w
+        Physics.tick w
       end
 
       run_diagnostics args, w
@@ -168,7 +168,7 @@ module StressTest
 
       if args.state.stress_churn_timer >= 180
         args.state.stress_churn_timer = 0
-        w = Physics.create_world old: args.state.world
+        w = Physics.create_world
         args.state.world = w
         make_walls w
         Physics.transform_shapes w
@@ -196,7 +196,7 @@ module StressTest
         i += 1
       end
 
-      Physics.step w
+      Physics.tick w
     end
 
     # Decomposed Step: Physics.step broken apart with alloc bursts between phases
@@ -259,7 +259,7 @@ module StressTest
       Physics.finalize_positions w
       alloc_garbage 500
 
-      Physics::Islands.update w, dt
+      Physics::Islands.tick w, dt
 
       i = 0
       while i < bodies.length
