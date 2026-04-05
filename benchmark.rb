@@ -55,8 +55,6 @@ module BenchmarkTest
       $gtk.log "Bench: warming up dynamic_tree..."
     end
 
-    # --- Scenarios ---
-
     def setup_scenario args, idx
       case idx
       when 0 then setup_small_circles args
@@ -380,8 +378,6 @@ module BenchmarkTest
     def fmt_ms v
       "%.2fms" % (v * 1000)
     end
-
-    # --- Render ---
 
     def render_bench args, w
       deg = 180.0 / Math::PI
