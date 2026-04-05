@@ -28,8 +28,7 @@ module StressTest
       end
     end
 
-    # --- Scenario 0: Mass Spawn (300 bodies in tight area) ---
-
+    # Scenario 0: Mass Spawn (300 bodies in tight area
     def setup_mass_spawn args
       w = Physics.create_world old: args.state.world
       args.state.world = w
@@ -64,8 +63,7 @@ module StressTest
       Physics.transform_shapes w
     end
 
-    #  Scenario 1: Churn (spawn/destroy cycle)
-
+    # Scenario 1: Churn (spawn/destroy cycle)
     def setup_churn args
       w = Physics.create_world old: args.state.world
       args.state.world = w
@@ -83,7 +81,6 @@ module StressTest
     end
 
     # Scenario 2: GC Hammer (modest bodies + forced allocation pressure)
-
     def setup_gc_hammer args
       w = Physics.create_world old: args.state.world
       args.state.world = w
@@ -111,13 +108,11 @@ module StressTest
     end
 
     #Scenario 3: Decomposed Step (mass spawn + GC between phases)
-
     def setup_decomposed args
       setup_mass_spawn args
     end
 
     # Tick
-
     def tick_stress args
       w = args.state.world
 
@@ -168,7 +163,6 @@ module StressTest
     end
 
     # Churn: spawn each frame, nuke every 180 frames
-
     def tick_churn args, w
       args.state.stress_churn_timer += 1
 
@@ -206,7 +200,6 @@ module StressTest
     end
 
     # Decomposed Step: Physics.step broken apart with alloc bursts between phases
-
     def decomposed_step w
       dt = w[:dt]
       sub_steps = w[:sub_steps]
@@ -277,7 +270,6 @@ module StressTest
     end
 
     # Allocation burst to trigger GC
-
     def alloc_garbage count
       i = 0
       while i < count
@@ -287,7 +279,6 @@ module StressTest
     end
 
     # Diagnostics
-
     def run_diagnostics args, w
       bodies = w[:bodies]
       i = 0
@@ -319,7 +310,6 @@ module StressTest
     end
 
     # Rendering (reuses sandbox pattern)
-
     def render_stress args, w
       deg = 180.0 / Math::PI
       shapes = w[:shapes]; i = 0
