@@ -11,9 +11,11 @@ convex decomposition, and procedural shattering
 
 - **Shapes** — circle, convex polygon, capsule, segment
 - **Collision detection** — SAT with polygon clipping, all shape-pair combinations
+- **Collision filtering** — per-shape bitmask layer/mask with named layer support
 - **Constraint solver** — TGS-Soft iterative solver with sub-stepping and warm-starting
 - **Joints** — distance, revolute, prismatic, weld, wheel, motor
 - **Broadphase** — spatial hash, tunable with pow2 cell size
+- **Callbacks** — world-level and per-body contact callbacks (begin/persist/end)
 - **Sleeping** — island-based sleeping
 - **Debug drawing** — contact points, AABBs, sleep state visualization
 
@@ -122,35 +124,40 @@ b = Physics.create_body w,
 
 ### Shapes
 
-All shapes are attached to a body via `body_id`. Dynamic bodies automatically compute mass and inertia from shape density and geometry.
+All shapes are attached to a body via `body_id`. Dynamic bodies automatically compute mass and inertia from shape density and geometry. All shape creation methods accept optional `layer:` and `mask:` parameters for collision filtering (see [Collision Filtering](#collision-filtering)).
 
 ```ruby
 Physics.create_circle w,
   body_id: b[:id],
   radius: 20.0,
   offset_x: 0.0, offset_y: 0.0,  # local offset from body center
-  density: 1.0, friction: 0.6, restitution: 0.0
+  density: 1.0, friction: 0.6, restitution: 0.0,
+  layer: 0xFFFF, mask: 0xFFFF  # collision filter (default: collide with everything)
 
 Physics.create_box w,
   body_id: b[:id],
   w: 40, h: 20,
-  density: 1.0, friction: 0.6, restitution: 0.0
+  density: 1.0, friction: 0.6, restitution: 0.0,
+  layer: 0xFFFF, mask: 0xFFFF
 
 Physics.create_polygon w,
   body_id: b[:id],
   vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
-  density: 1.0, friction: 0.6, restitution: 0.0
+  density: 1.0, friction: 0.6, restitution: 0.0,
+  layer: 0xFFFF, mask: 0xFFFF
 
 Physics.create_capsule w,
   body_id: b[:id],
   x1: -20, y1: 0, x2: 20, y2: 0,  # local endpoints
   radius: 8.0,
-  density: 1.0, friction: 0.6, restitution: 0.0
+  density: 1.0, friction: 0.6, restitution: 0.0,
+  layer: 0xFFFF, mask: 0xFFFF
 
 Physics.create_segment w,
   body_id: b[:id],
   x1: -100, y1: 0, x2: 100, y2: 0,  # local endpoints (zero-thickness line)
-  friction: 0.6, restitution: 0.0
+  friction: 0.6, restitution: 0.0,
+  layer: 0xFFFF, mask: 0xFFFF
 ```
 
 ### Forces and Impulses
@@ -171,6 +178,45 @@ Physics.set_inertia w, b[:id], inertia
 b = Physics.find_body w, body_id
 s = Physics.find_shape w, shape_id
 b = Physics.body_at_point w, px, py  # returns first body at world point, or nil
+```
+
+### Collision Filtering
+
+Shapes have `layer` and `mask` bitmask integers that control which shapes can collide. Two shapes collide only if each shape's layer is included in the other's mask:
+
+```ruby
+(shape_a[:layer] & shape_b[:mask]) != 0 && (shape_b[:layer] & shape_a[:mask]) != 0
+```
+
+Both default to `0xFFFF` (collide with everything). Use `Physics::LAYERS` for convenient named layers — first access to any symbol auto-assigns the next bit:
+
+```ruby
+# Define layers (auto-assigned on first access)
+Physics::LAYERS[:terrain]      # => 0x0001
+Physics::LAYERS[:player]       # => 0x0002
+Physics::LAYERS[:enemy]        # => 0x0004
+Physics::LAYERS[:projectile]   # => 0x0008
+
+# Build masks by OR-ing layers together
+COLLIDES_WITH_ALL    = Physics::LAYERS[:terrain] | Physics::LAYERS[:player] | Physics::LAYERS[:enemy] | Physics::LAYERS[:projectile]
+COLLIDES_WITH_GROUND = Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
+
+# Player collides with terrain and enemies, but not projectiles
+Physics.create_circle w, body_id: b[:id], radius: 10,
+  layer: Physics::LAYERS[:player],
+  mask: COLLIDES_WITH_GROUND
+
+# Projectile collides with terrain and enemies only
+Physics.create_circle w, body_id: b[:id], radius: 4,
+  layer: Physics::LAYERS[:projectile],
+  mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
+```
+
+Filtering is checked before narrowphase collision detection, so filtered-out pairs have zero performance cost. You can also modify `layer` and `mask` on existing shapes at any time:
+
+```ruby
+shape[:layer] = Physics::LAYERS[:ghost]   # change layer at runtime
+shape[:mask] = 0x0000          # collide with nothing
 ```
 
 ### Joints
@@ -225,15 +271,45 @@ Physics::Joints.create_motor_joint w,
 
 ### Contact Callbacks
 
-Register world-level callbacks to respond to collision events. The receiver can be any object — use `self` for top-level methods or a module/instance that responds to the named method.
+There are two levels of contact callbacks: **world-level** (global, fires for every collision) and **per-body** (fires only for collisions involving that specific body).
+
+#### World-level callbacks
+
+Register on the world to observe all collision events. The receiver can be any object — use `self` for top-level methods or a module/instance that responds to the named method.
 
 ```ruby
-Physics.on_contact_begin w, self, :on_begin
-Physics.on_contact_persist w, self, :on_persist
-Physics.on_contact_end w, self, :on_end
+Physics.on_contact_begin w, receiver, :method_name
+Physics.on_contact_persist w, receiver, :method_name
+Physics.on_contact_end w, receiver, :method_name
 ```
 
-All three callbacks receive the same arguments:
+#### Per-body callbacks
+
+Register on an individual body. Both bodies in a collision are notified. Each body always sees itself as the first argument.
+
+```ruby
+Physics.on_body_contact_begin body, receiver, :method_name
+Physics.on_body_contact_persist body, receiver, :method_name
+Physics.on_body_contact_end body, receiver, :method_name
+```
+
+Example — kill an enemy when it gets hit hard:
+
+```ruby
+Physics.on_body_contact_begin enemy_body, self, :on_enemy_hit
+
+def on_enemy_hit self_body, other_body, pair
+  nx = pair[:manifold][:normal_x]; ny = pair[:manifold][:normal_y]
+  dvx = other_body[:vx] - self_body[:vx]
+  dvy = other_body[:vy] - self_body[:vy]
+  impact = (dvx * nx + dvy * ny).abs
+  kill(self_body) if impact > 200
+end
+```
+
+#### Callback arguments
+
+All callbacks (world and per-body) receive the same three arguments:
 
 ```ruby
 def on_begin body_a, body_b, pair
@@ -257,10 +333,12 @@ end
 
 **Notes:**
 - Callbacks fire inline during `Physics.tick` (inside `find_contacts`). Do not add/remove bodies or shapes inside a callback.
-- `body_a` owns the lower-ID shape; ordering is deterministic but arbitrary.
+- World callbacks fire first, then per-body callbacks for each body involved.
+- For per-body callbacks, each body sees itself as `body_a` (first argument) and the other body as `body_b`.
+- For world callbacks, `body_a` owns the lower-ID shape; ordering is deterministic but arbitrary.
 - Multiple shapes between the same two bodies produce separate callbacks.
 - Sleeping contacts: no `persist` or `end` events fire while both bodies sleep.
-- Pass `nil` to unregister: `w[:on_contact_begin] = nil`
+- Unregister: `w[:on_contact_begin] = nil` (world) or `body[:on_contact_begin] = nil` (per-body).
 
 ### Sleeping
 

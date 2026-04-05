@@ -23,6 +23,7 @@
 module Physics
   CONTACT_POOL ||= []
   PAIR_POOL    ||= []
+  LAYERS       ||= Hash.new { |h, k| raise "Max 32 layers" if h.size >= 32; h[k] = 1 << h.size }
   MR           ||= { normal_x: 0.0, normal_y: 0.0, friction: 0.0, restitution: 0.0, points: [] }
   CP_RESULT    ||= [0.0, 0.0, 0.0]
   CPS_RESULT   ||= [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -93,6 +94,18 @@ module Physics
       world[:on_contact_end] = [receiver, method]
     end
 
+    def on_body_contact_begin body, receiver, method
+      body[:on_contact_begin] = [receiver, method]
+    end
+
+    def on_body_contact_persist body, receiver, method
+      body[:on_contact_persist] = [receiver, method]
+    end
+
+    def on_body_contact_end body, receiver, method
+      body[:on_contact_end] = [receiver, method]
+    end
+
     def create_body world, x: 0.0, y: 0.0, angle: 0.0, type: :dynamic, gravity_scale: 1.0, linear_damping: 0.0, angular_damping: 0.0
       id = world[:next_body_id]
       world[:next_body_id] = id + 1
@@ -110,14 +123,17 @@ module Physics
         angular_damping: angular_damping.to_f,
         sleeping: false,
         sleep_time: 0.0,
-        island_id: -1
+        island_id: -1,
+        on_contact_begin: nil,
+        on_contact_persist: nil,
+        on_contact_end: nil
       }
       world[:bodies] << body
       Islands.create_island world, body if type == :dynamic
       body
     end
 
-    def create_circle world, body_id:, radius:, offset_x: 0.0, offset_y: 0.0, density: 1.0, friction: 0.6, restitution: 0.0
+    def create_circle world, body_id:, radius:, offset_x: 0.0, offset_y: 0.0, density: 1.0, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
       r = radius.to_f
       id = world[:next_shape_id]
       world[:next_shape_id] = id + 1
@@ -131,6 +147,7 @@ module Physics
         friction: friction.to_f,
         restitution: restitution.to_f,
         density: density.to_f,
+        layer: layer, mask: mask,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0
       }
       world[:shapes] << shape
@@ -152,7 +169,7 @@ module Physics
       shape
     end
 
-    def create_polygon world, body_id:, vertices:, density: 1.0, friction: 0.6, restitution: 0.0
+    def create_polygon world, body_id:, vertices:, density: 1.0, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
       n = vertices.length / 2
       return nil if n < 3
 
@@ -273,6 +290,7 @@ module Physics
         friction: friction.to_f,
         restitution: restitution.to_f,
         density: density.to_f,
+        layer: layer, mask: mask,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0
       }
       world[:shapes] << shape
@@ -291,14 +309,14 @@ module Physics
       shape
     end
 
-    def create_box world, body_id:, w:, h:, density: 1.0, friction: 0.6, restitution: 0.0
+    def create_box world, body_id:, w:, h:, density: 1.0, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
       hw = w.to_f * 0.5
       hh = h.to_f * 0.5
       verts = [-hw, -hh, hw, -hh, hw, hh, -hw, hh]
-      create_polygon world, body_id: body_id, vertices: verts, density: density, friction: friction, restitution: restitution
+      create_polygon world, body_id: body_id, vertices: verts, density: density, friction: friction, restitution: restitution, layer: layer, mask: mask
     end
 
-    def create_capsule world, body_id:, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0, radius:, density: 1.0, friction: 0.6, restitution: 0.0
+    def create_capsule world, body_id:, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0, radius:, density: 1.0, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
       r = radius.to_f
       ax = x1.to_f; ay = y1.to_f
       bx = x2.to_f; by = y2.to_f
@@ -309,6 +327,7 @@ module Physics
         id: id, type: :capsule, body_id: body_id,
         x1: ax, y1: ay, x2: bx, y2: by, radius: r,
         friction: friction.to_f, restitution: restitution.to_f, density: density.to_f,
+        layer: layer, mask: mask,
         wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0
       }
@@ -334,13 +353,14 @@ module Physics
       shape
     end
 
-    def create_segment world, body_id:, x1:, y1:, x2:, y2:, friction: 0.6, restitution: 0.0
+    def create_segment world, body_id:, x1:, y1:, x2:, y2:, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
       id = world[:next_shape_id]
       world[:next_shape_id] = id + 1
       shape = {
         id: id, type: :segment, body_id: body_id,
         x1: x1.to_f, y1: y1.to_f, x2: x2.to_f, y2: y2.to_f, radius: 0.0,
         friction: friction.to_f, restitution: restitution.to_f, density: 0.0,
+        layer: layer, mask: mask,
         wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0
       }
@@ -807,6 +827,7 @@ module Physics
         sa = shapes[lo]; sb = shapes[hi]
         body_a_id = sa[:body_id]; body_b_id = sb[:body_id]
         next if body_a_id == body_b_id
+        next if (sa[:layer] & sb[:mask]) == 0 || (sb[:layer] & sa[:mask]) == 0
         blo = body_a_id < body_b_id ? body_a_id : body_b_id
         bhi = body_a_id < body_b_id ? body_b_id : body_a_id
         next if no_collide[(blo << 16) | bhi]
@@ -854,12 +875,18 @@ module Physics
               pair[:touching] = true
               Islands.link_contact world, pair
               if cb_begin; cb_begin[0].send cb_begin[1], ba, bb, pair; end
+              bcb = ba[:on_contact_begin]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
+              bcb = bb[:on_contact_begin]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
             else
               if cb_persist; cb_persist[0].send cb_persist[1], ba, bb, pair; end
+              bcb = ba[:on_contact_persist]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
+              bcb = bb[:on_contact_persist]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
             end
           else
             if was_touching
               if cb_end; cb_end[0].send cb_end[1], ba, bb, pair; end
+              bcb = ba[:on_contact_end]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
+              bcb = bb[:on_contact_end]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
               pair[:touching] = false
               Islands.unlink_contact world, pair
               pts = pair[:manifold][:points]
@@ -910,11 +937,11 @@ module Physics
           end
           pairs[key] = new_pair
           Islands.link_contact world, new_pair
-          if cb_begin
-            b1 = find_body world, new_pair[:body_a_id]
-            b2 = find_body world, new_pair[:body_b_id]
-            cb_begin[0].send cb_begin[1], b1, b2, new_pair
-          end
+          b1 = find_body world, new_pair[:body_a_id]
+          b2 = find_body world, new_pair[:body_b_id]
+          if cb_begin; cb_begin[0].send cb_begin[1], b1, b2, new_pair; end
+          bcb = b1[:on_contact_begin]; if bcb; bcb[0].send bcb[1], b1, b2, new_pair; end
+          bcb = b2[:on_contact_begin]; if bcb; bcb[0].send bcb[1], b2, b1, new_pair; end
         end
       end
 
@@ -922,11 +949,11 @@ module Physics
       pairs.delete_if do |_k, v|
         if v[:stale]
           if v[:touching]
-            if cb_end
-              sba = find_body world, v[:body_a_id]
-              sbb = find_body world, v[:body_b_id]
-              cb_end[0].send cb_end[1], sba, sbb, v
-            end
+            sba = find_body world, v[:body_a_id]
+            sbb = find_body world, v[:body_b_id]
+            if cb_end; cb_end[0].send cb_end[1], sba, sbb, v; end
+            bcb = sba[:on_contact_end]; if bcb; bcb[0].send bcb[1], sba, sbb, v; end
+            bcb = sbb[:on_contact_end]; if bcb; bcb[0].send bcb[1], sbb, sba, v; end
             Islands.unlink_contact world, v
           end
           pts = v[:manifold][:points]

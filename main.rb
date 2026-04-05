@@ -18,6 +18,7 @@ SANDBOX_COLORS = %w[red orange yellow green blue indigo violet]
 SPAWN_MODES = [:circle, :box, :capsule, :polygon]
 EXPLOSION_FRAMES = (0..6).map { |i| "sprites/misc/explosion-#{i}.png" }
 
+
 module Game
   class << self
     def init
@@ -34,20 +35,21 @@ module Game
       @enemy_map[body_id] = entry
     end
 
-    def on_contact_begin body_a, body_b, pair
-      ea = @enemy_map[body_a[:id]]
-      eb = @enemy_map[body_b[:id]]
-      return unless ea || eb
+    # Per-body callback: registered on each enemy body individually.
+    # The enemy body is always the first argument (self), the other body second.
+    def on_enemy_hit self_body, other_body, pair
+      entry = @enemy_map[self_body[:id]]
+      return unless entry
 
-      dragon_hit = @dragon_ids[body_a[:id]] || @dragon_ids[body_b[:id]]
+      dragon_hit = @dragon_ids[other_body[:id]]
 
       nx = pair[:manifold][:normal_x]
       ny = pair[:manifold][:normal_y]
-      dvx = body_b[:vx] - body_a[:vx]
-      dvy = body_b[:vy] - body_a[:vy]
+      dvx = other_body[:vx] - self_body[:vx]
+      dvy = other_body[:vy] - self_body[:vy]
       impact = (dvx * nx + dvy * ny).abs
 
-      kill_enemy(ea || eb) if dragon_hit || impact > 200
+      kill_enemy(entry) if dragon_hit || impact > 200
     end
 
     def kill_enemy e
@@ -91,7 +93,6 @@ def setup_level args
 
   args.state.world = w
   Game.init
-  Physics.on_contact_begin w, Game, :on_contact_begin
   args.state.dragons_remaining = 5
   args.state.active_dragon = nil
   args.state.dragging = false
@@ -105,11 +106,11 @@ def setup_level args
   args.state.game_state = :aiming
 
   g1 = Physics.create_body w, x: 450, y: GROUND_Y - 15, type: :static
-  Physics.create_box w, body_id: g1[:id], w: 900, h: 30, friction: 0.8
+  Physics.create_box w, body_id: g1[:id], w: 900, h: 30, friction: 0.8, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   g2 = Physics.create_body w, x: 1100, y: GROUND_Y - 15, type: :static
-  Physics.create_box w, body_id: g2[:id], w: 900, h: 30, friction: 0.8
+  Physics.create_box w, body_id: g2[:id], w: 900, h: 30, friction: 0.8, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   lw = Physics.create_body w, x: -5, y: 400, type: :static
-  Physics.create_box w, body_id: lw[:id], w: 10, h: 800
+  Physics.create_box w, body_id: lw[:id], w: 10, h: 800, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
 
   build_castle w, args
   load_dragon w, args
@@ -154,14 +155,17 @@ end
 
 def add_block w, args, x, y
   b = Physics.create_body w, x: x, y: y, type: :dynamic
-  Physics.create_box w, body_id: b[:id], w: BLOCK_SIZE, h: BLOCK_SIZE, density: 0.5, friction: 0.6, restitution: 0.1
+  Physics.create_box w, body_id: b[:id], w: BLOCK_SIZE, h: BLOCK_SIZE, density: 0.5, friction: 0.6, restitution: 0.1,
+                       layer: Physics::LAYERS[:block], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   Physics::Islands.sleep_body w, b
   args.state.block_shapes << { body: b, shape: w[:shapes].last, color: BLOCK_COLORS[w[:shapes].last[:id] % BLOCK_COLORS.length] }
 end
 
 def add_enemy w, args, x, y
   b = Physics.create_body w, x: x, y: y, type: :dynamic
-  Physics.create_box w, body_id: b[:id], w: ENEMY_W, h: ENEMY_H, density: 0.3, friction: 0.4, restitution: 0.05
+  Physics.create_box w, body_id: b[:id], w: ENEMY_W, h: ENEMY_H, density: 0.3, friction: 0.4, restitution: 0.05,
+                       layer: Physics::LAYERS[:enemy], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
+  Physics.on_body_contact_begin b, Game, :on_enemy_hit
   Physics::Islands.sleep_body w, b
   entry = { body: b, shape: w[:shapes].last, color: ENEMY_COLORS[b[:id] % ENEMY_COLORS.length], alive: true }
   args.state.enemy_bodies << entry
@@ -172,7 +176,8 @@ def load_dragon w, args
   return if args.state.dragons_remaining <= 0
   b = Physics.create_body w, x: SLING_X, y: SLING_Y, type: :dynamic
   b[:gravity_scale] = 0.0
-  Physics.create_circle w, body_id: b[:id], radius: DRAGON_RADIUS, density: 1.5, friction: 0.5, restitution: 0.3
+  Physics.create_circle w, body_id: b[:id], radius: DRAGON_RADIUS, density: 1.5, friction: 0.5, restitution: 0.3,
+                          layer: Physics::LAYERS[:dragon], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   args.state.active_dragon = { body: b, shape: w[:shapes].last }
   Game.register_dragon b[:id]
   args.state.dragging = false
@@ -442,6 +447,8 @@ module CallbackDemo
       @begin_count = 0
       @persist_count = 0
       @end_count = 0
+      @tracked_hits = 0
+      @tracked_body = nil
     end
 
     def on_contact_begin body_a, body_b, pair
@@ -496,9 +503,16 @@ module CallbackDemo
       end
     end
 
+    # Per-body callback: registered on the tracked body only
+    def on_tracked_hit self_body, other_body, pair
+      @tracked_hits += 1
+    end
+
     def begin_count; @begin_count; end
     def persist_count; @persist_count; end
     def end_count; @end_count; end
+    def tracked_hits; @tracked_hits; end
+    def tracked_body; @tracked_body; end
   end
 end
 
@@ -524,6 +538,12 @@ def setup_callback_demo args
   Physics.create_segment w, body_id: ramp[:id], x1: -150, y1: 45, x2: 150, y2: -45
   ramp2 = Physics.create_body w, x: 880, y: 120, type: :static
   Physics.create_segment w, body_id: ramp2[:id], x1: -150, y1: -45, x2: 150, y2: 45
+
+  # Tracked body: uses per-body callback to count its own collisions
+  tracked = Physics.create_body w, x: 640, y: 500, type: :dynamic
+  Physics.create_circle w, body_id: tracked[:id], radius: 20, density: 1.0, friction: 0.6, restitution: 0.5
+  Physics.on_body_contact_begin tracked, CallbackDemo, :on_tracked_hit
+  CallbackDemo.instance_variable_set(:@tracked_body, tracked)
 
   5.times { sb_circle w, 200 + rand(880), 400 + rand(250) }
   5.times { sb_box w, 200 + rand(880), 400 + rand(250) }
@@ -608,13 +628,20 @@ def tick_callback_demo args
 
   CallbackDemo.tick_effects args.outputs
 
+  # Highlight the tracked body with a white ring
+  tb = CallbackDemo.tracked_body
+  if tb
+    args.outputs.sprites << { x: tb[:x] - 24, y: tb[:y] - 24, w: 48, h: 48, path: 'sprites/circle/white.png', a: 120 }
+  end
+
   if args.state.debug_draw
     Physics::DebugDraw.draw_contacts w, args.outputs; Physics::DebugDraw.draw_aabbs w, args.outputs; Physics::DebugDraw.draw_sleep_state w, args.outputs
   end
 
   args.outputs.labels << { x: 10, y: 710, text: "Callback Demo", size_px: 24, r: 255, g: 255, b: 255 }
-  args.outputs.labels << { x: 10, y: 685, text: "Begin: #{CallbackDemo.begin_count}  Persist: #{CallbackDemo.persist_count}  End: #{CallbackDemo.end_count}", size_px: 18, r: 200, g: 200, b: 200 }
-  args.outputs.labels << { x: 10, y: 662, text: "Yellow flash = begin   Green line = persist   Star = end", size_px: 14, r: 150, g: 150, b: 180 }
+  args.outputs.labels << { x: 10, y: 685, text: "Global — Begin: #{CallbackDemo.begin_count}  Persist: #{CallbackDemo.persist_count}  End: #{CallbackDemo.end_count}", size_px: 18, r: 200, g: 200, b: 200 }
+  args.outputs.labels << { x: 10, y: 662, text: "Per-body — Tracked body hits: #{CallbackDemo.tracked_hits} (white circle)", size_px: 18, r: 180, g: 220, b: 255 }
+  args.outputs.labels << { x: 10, y: 639, text: "Yellow flash = begin   Green line = persist   Star = end", size_px: 14, r: 150, g: 150, b: 180 }
   dc = w[:bodies].count { |b| b[:type] == :dynamic }; sc = w[:bodies].count { |b| b[:sleeping] }
   args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  Bodies: #{dc}  Sleep: #{sc}"
   args.outputs.debug << "Click=#{mode}  Tab=shape  D=debug  R=reset  Shift+C=game"
