@@ -38,6 +38,9 @@ module Physics
   SPECULATIVE_DISTANCE = 2.0
   PI                 = Math::PI
   TWO_PI             = 2.0 * PI
+  TREE_STACK         ||= Array.new(256, nil)
+  AABB_MARGIN_FRAC   = 0.125
+  MAX_AABB_MARGIN    = 5.0
 
   class << self
     def create_world
@@ -45,6 +48,7 @@ module Physics
         bodies: [],
         shapes: [],
         pairs: {},
+        broadphase_type: :dynamic_tree,
         broadphase: { cell_size: 64, shift: 6,
                        static_cells: {},
                        dynamic_cells: {},
@@ -52,12 +56,14 @@ module Physics
                        pool: [],
                        seen: {},
                        candidates: [],
-                       no_collide: {} },
+                       no_collide: {},
+                       static_tree: nil,
+                       dynamic_tree: nil },
         gravity_x: 0.0,
         gravity_y: -980.0,
         dt: 1.0 / 60.0,
-        sub_steps: 2,
-        velocity_iterations: 2,
+        sub_steps: 4,
+        velocity_iterations: 1,
         relax_iterations: 1,
         hertz: 30.0,
         damping_ratio: 10.0,
@@ -148,7 +154,9 @@ module Physics
         restitution: restitution.to_f,
         density: density.to_f,
         layer: layer, mask: mask,
-        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0
+        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
+        proxy_id: nil, dyn_proxy_id: nil,
+        fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
       }
       world[:shapes] << shape
 
@@ -291,7 +299,9 @@ module Physics
         restitution: restitution.to_f,
         density: density.to_f,
         layer: layer, mask: mask,
-        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0
+        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
+        proxy_id: nil, dyn_proxy_id: nil,
+        fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
       }
       world[:shapes] << shape
 
@@ -329,7 +339,9 @@ module Physics
         friction: friction.to_f, restitution: restitution.to_f, density: density.to_f,
         layer: layer, mask: mask,
         wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
-        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0
+        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
+        proxy_id: nil, dyn_proxy_id: nil,
+        fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
       }
       world[:shapes] << shape
 
@@ -362,7 +374,9 @@ module Physics
         friction: friction.to_f, restitution: restitution.to_f, density: 0.0,
         layer: layer, mask: mask,
         wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
-        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0
+        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
+        proxy_id: nil, dyn_proxy_id: nil,
+        fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
       }
       world[:shapes] << shape
       shape
@@ -545,6 +559,30 @@ module Physics
       bp[:static_cells].clear; bp[:dynamic_cells].clear; bp[:static_dirty] = true
     end
 
+    def set_broadphase_type world, type
+      return if world[:broadphase_type] == type
+      world[:broadphase_type] = type
+      bp = world[:broadphase]
+      shapes = world[:shapes]; i = 0
+      while i < shapes.length
+        s = shapes[i]; s[:proxy_id] = nil; s[:dyn_proxy_id] = nil
+        i += 1
+      end
+      if type == :dynamic_tree
+        bp[:static_tree] = tree_create
+        bp[:dynamic_tree] = tree_create
+        bp[:static_dirty] = true
+        bp[:static_cells].each_value { |a| a.clear; bp[:pool] << a }
+        bp[:static_cells].clear
+        bp[:dynamic_cells].each_value { |a| a.clear; bp[:pool] << a }
+        bp[:dynamic_cells].clear
+      else
+        bp[:static_tree] = nil
+        bp[:dynamic_tree] = nil
+        bp[:static_dirty] = true
+      end
+    end
+
     def set_mass world, body_id, mass
       b = find_body world, body_id
       return unless b
@@ -712,6 +750,440 @@ module Physics
       end
     end
 
+    # --- Spatial Hash Broadphase ---
+
+    def spatial_hash_broadphase world, shapes, bp, n, candidates, seen
+      shift = bp[:shift]; sc = bp[:static_cells]; dc = bp[:dynamic_cells]; pool = bp[:pool]
+      if bp[:static_dirty] || bp[:static_shape_count] != n
+        sc.each_value { |arr| arr.clear; pool << arr }
+        sc.clear
+        i = 0
+        while i < n
+          s = shapes[i]; b = find_body world, s[:body_id]
+          if b[:type] == :static || b[:sleeping]
+            compute_aabb s, b; insert_shape sc, pool, shift, i, s
+          end
+          i += 1
+        end
+        bp[:static_dirty] = false; bp[:static_shape_count] = n
+      end
+      dc.each_value { |arr| arr.clear; pool << arr }
+      dc.clear
+      i = 0
+      while i < n
+        s = shapes[i]; b = find_body world, s[:body_id]
+        unless b[:type] == :static || b[:sleeping]
+          compute_aabb s, b; insert_shape dc, pool, shift, i, s
+        end
+        i += 1
+      end
+      seen.clear; candidates.clear
+      dc.each_value do |cell|
+        cn = cell.length; ci = 0
+        while ci < cn
+          ai = cell[ci]; cj = ci + 1
+          while cj < cn
+            bi = cell[cj]; cj += 1
+            lo = ai < bi ? ai : bi; hi = ai < bi ? bi : ai
+            pk = (lo << 16) | hi
+            unless seen[pk]; seen[pk] = true; candidates << lo << hi; end
+          end
+          ci += 1
+        end
+      end
+      dc.each do |cell_key, dcell|
+        scell = sc[cell_key]; next unless scell
+        di = 0
+        while di < dcell.length
+          ai = dcell[di]; di += 1; si = 0
+          while si < scell.length
+            bi = scell[si]; si += 1
+            lo = ai < bi ? ai : bi; hi = ai < bi ? bi : ai
+            pk = (lo << 16) | hi
+            unless seen[pk]; seen[pk] = true; candidates << lo << hi; end
+          end
+        end
+      end
+    end
+
+    # --- Dynamic AABB Tree Broadphase ---
+
+    def tree_create cap = 16
+      nodes = Array.new(cap)
+      i = 0
+      while i < cap
+        nodes[i] = { aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
+                      child1: nil, child2: nil, user_data: -1,
+                      parent: nil, height: -1, next_free: i + 1 < cap ? i + 1 : nil }
+        i += 1
+      end
+      { nodes: nodes, root: nil, free_list: 0, node_count: 0, node_capacity: cap, proxy_count: 0 }
+    end
+
+    def tree_alloc_node tree
+      if tree[:free_list] == nil
+        old_cap = tree[:node_capacity]
+        new_cap = old_cap + (old_cap >> 1); new_cap = old_cap + 1 if new_cap == old_cap
+        nodes = tree[:nodes]
+        i = old_cap
+        while i < new_cap
+          nodes[i] = { aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
+                        child1: nil, child2: nil, user_data: -1,
+                        parent: nil, height: -1, next_free: i + 1 < new_cap ? i + 1 : nil }
+          i += 1
+        end
+        tree[:free_list] = old_cap; tree[:node_capacity] = new_cap
+      end
+      idx = tree[:free_list]; node = tree[:nodes][idx]
+      tree[:free_list] = node[:next_free]
+      node[:aabb_x0] = 0.0; node[:aabb_y0] = 0.0; node[:aabb_x1] = 0.0; node[:aabb_y1] = 0.0
+      node[:child1] = nil; node[:child2] = nil; node[:user_data] = -1
+      node[:parent] = nil; node[:height] = 0; node[:next_free] = nil
+      tree[:node_count] += 1; idx
+    end
+
+    def tree_free_node tree, id
+      node = tree[:nodes][id]; node[:next_free] = tree[:free_list]
+      node[:height] = -1; tree[:free_list] = id; tree[:node_count] -= 1
+    end
+
+    def tree_find_best_sibling tree, bx0, by0, bx1, by1
+      nodes = tree[:nodes]; root = tree[:root]; rn = nodes[root]
+      area_d = 2.0 * ((bx1 - bx0) + (by1 - by0))
+      center_dx = (bx0 + bx1) * 0.5; center_dy = (by0 + by1) * 0.5
+      rx0 = rn[:aabb_x0] < bx0 ? rn[:aabb_x0] : bx0; ry0 = rn[:aabb_y0] < by0 ? rn[:aabb_y0] : by0
+      rx1 = rn[:aabb_x1] > bx1 ? rn[:aabb_x1] : bx1; ry1 = rn[:aabb_y1] > by1 ? rn[:aabb_y1] : by1
+      area_base = 2.0 * ((rn[:aabb_x1] - rn[:aabb_x0]) + (rn[:aabb_y1] - rn[:aabb_y0]))
+      direct_cost = 2.0 * ((rx1 - rx0) + (ry1 - ry0)); inherited_cost = 0.0
+      best_sibling = root; best_cost = direct_cost
+      index = root
+      while nodes[index][:height] > 0
+        n = nodes[index]; c1 = n[:child1]; c2 = n[:child2]
+        cost = direct_cost + inherited_cost
+        if cost < best_cost; best_sibling = index; best_cost = cost; end
+        inherited_cost += direct_cost - area_base
+        n1 = nodes[c1]; n2 = nodes[c2]
+        leaf1 = n1[:height] == 0; leaf2 = n2[:height] == 0
+        ux0 = n1[:aabb_x0] < bx0 ? n1[:aabb_x0] : bx0; uy0 = n1[:aabb_y0] < by0 ? n1[:aabb_y0] : by0
+        ux1 = n1[:aabb_x1] > bx1 ? n1[:aabb_x1] : bx1; uy1 = n1[:aabb_y1] > by1 ? n1[:aabb_y1] : by1
+        direct_cost1 = 2.0 * ((ux1 - ux0) + (uy1 - uy0)); area1 = 0.0; lower1 = 1e18
+        if leaf1
+          cost1 = direct_cost1 + inherited_cost
+          if cost1 < best_cost; best_sibling = c1; best_cost = cost1; end
+        else
+          area1 = 2.0 * ((n1[:aabb_x1] - n1[:aabb_x0]) + (n1[:aabb_y1] - n1[:aabb_y0]))
+          diff1 = area_d - area1; diff1 = 0.0 if diff1 > 0.0
+          lower1 = inherited_cost + direct_cost1 + diff1
+        end
+        vx0 = n2[:aabb_x0] < bx0 ? n2[:aabb_x0] : bx0; vy0 = n2[:aabb_y0] < by0 ? n2[:aabb_y0] : by0
+        vx1 = n2[:aabb_x1] > bx1 ? n2[:aabb_x1] : bx1; vy1 = n2[:aabb_y1] > by1 ? n2[:aabb_y1] : by1
+        direct_cost2 = 2.0 * ((vx1 - vx0) + (vy1 - vy0)); area2 = 0.0; lower2 = 1e18
+        if leaf2
+          cost2 = direct_cost2 + inherited_cost
+          if cost2 < best_cost; best_sibling = c2; best_cost = cost2; end
+        else
+          area2 = 2.0 * ((n2[:aabb_x1] - n2[:aabb_x0]) + (n2[:aabb_y1] - n2[:aabb_y0]))
+          diff2 = area_d - area2; diff2 = 0.0 if diff2 > 0.0
+          lower2 = inherited_cost + direct_cost2 + diff2
+        end
+        break if leaf1 && leaf2
+        break if best_cost <= lower1 && best_cost <= lower2
+        if lower1 == lower2 && !leaf1
+          d1x = (n1[:aabb_x0] + n1[:aabb_x1]) * 0.5 - center_dx; d1y = (n1[:aabb_y0] + n1[:aabb_y1]) * 0.5 - center_dy
+          d2x = (n2[:aabb_x0] + n2[:aabb_x1]) * 0.5 - center_dx; d2y = (n2[:aabb_y0] + n2[:aabb_y1]) * 0.5 - center_dy
+          lower1 = d1x * d1x + d1y * d1y; lower2 = d2x * d2x + d2y * d2y
+        end
+        if lower1 < lower2 && !leaf1
+          index = c1; area_base = area1; direct_cost = direct_cost1
+        else
+          index = c2; area_base = area2; direct_cost = direct_cost2
+        end
+      end
+      best_sibling
+    end
+
+    def tree_rotate tree, ia
+      nodes = tree[:nodes]; a = nodes[ia]
+      return if a[:height] < 2
+      ib = a[:child1]; ic = a[:child2]; b = nodes[ib]; c = nodes[ic]
+      if b[:height] == 0
+        iif = c[:child1]; ig = c[:child2]; f = nodes[iif]; g = nodes[ig]
+        cost_base = 2.0 * ((c[:aabb_x1] - c[:aabb_x0]) + (c[:aabb_y1] - c[:aabb_y0]))
+        bg_x0 = b[:aabb_x0] < g[:aabb_x0] ? b[:aabb_x0] : g[:aabb_x0]; bg_y0 = b[:aabb_y0] < g[:aabb_y0] ? b[:aabb_y0] : g[:aabb_y0]
+        bg_x1 = b[:aabb_x1] > g[:aabb_x1] ? b[:aabb_x1] : g[:aabb_x1]; bg_y1 = b[:aabb_y1] > g[:aabb_y1] ? b[:aabb_y1] : g[:aabb_y1]
+        cost_bf = 2.0 * ((bg_x1 - bg_x0) + (bg_y1 - bg_y0))
+        bf_x0 = b[:aabb_x0] < f[:aabb_x0] ? b[:aabb_x0] : f[:aabb_x0]; bf_y0 = b[:aabb_y0] < f[:aabb_y0] ? b[:aabb_y0] : f[:aabb_y0]
+        bf_x1 = b[:aabb_x1] > f[:aabb_x1] ? b[:aabb_x1] : f[:aabb_x1]; bf_y1 = b[:aabb_y1] > f[:aabb_y1] ? b[:aabb_y1] : f[:aabb_y1]
+        cost_bg = 2.0 * ((bf_x1 - bf_x0) + (bf_y1 - bf_y0))
+        return if cost_base < cost_bf && cost_base < cost_bg
+        if cost_bf < cost_bg
+          a[:child1] = iif; c[:child1] = ib; b[:parent] = ic; f[:parent] = ia
+          c[:aabb_x0] = bg_x0; c[:aabb_y0] = bg_y0; c[:aabb_x1] = bg_x1; c[:aabb_y1] = bg_y1
+          bh = b[:height]; gh = g[:height]; c[:height] = 1 + (bh > gh ? bh : gh)
+          ch = c[:height]; fh = f[:height]; a[:height] = 1 + (ch > fh ? ch : fh)
+        else
+          a[:child1] = ig; c[:child2] = ib; b[:parent] = ic; g[:parent] = ia
+          c[:aabb_x0] = bf_x0; c[:aabb_y0] = bf_y0; c[:aabb_x1] = bf_x1; c[:aabb_y1] = bf_y1
+          bh = b[:height]; fh = f[:height]; c[:height] = 1 + (bh > fh ? bh : fh)
+          ch = c[:height]; gh = g[:height]; a[:height] = 1 + (ch > gh ? ch : gh)
+        end
+      elsif c[:height] == 0
+        id = b[:child1]; ie = b[:child2]; d = nodes[id]; e = nodes[ie]
+        cost_base = 2.0 * ((b[:aabb_x1] - b[:aabb_x0]) + (b[:aabb_y1] - b[:aabb_y0]))
+        ce_x0 = c[:aabb_x0] < e[:aabb_x0] ? c[:aabb_x0] : e[:aabb_x0]; ce_y0 = c[:aabb_y0] < e[:aabb_y0] ? c[:aabb_y0] : e[:aabb_y0]
+        ce_x1 = c[:aabb_x1] > e[:aabb_x1] ? c[:aabb_x1] : e[:aabb_x1]; ce_y1 = c[:aabb_y1] > e[:aabb_y1] ? c[:aabb_y1] : e[:aabb_y1]
+        cost_cd = 2.0 * ((ce_x1 - ce_x0) + (ce_y1 - ce_y0))
+        cd_x0 = c[:aabb_x0] < d[:aabb_x0] ? c[:aabb_x0] : d[:aabb_x0]; cd_y0 = c[:aabb_y0] < d[:aabb_y0] ? c[:aabb_y0] : d[:aabb_y0]
+        cd_x1 = c[:aabb_x1] > d[:aabb_x1] ? c[:aabb_x1] : d[:aabb_x1]; cd_y1 = c[:aabb_y1] > d[:aabb_y1] ? c[:aabb_y1] : d[:aabb_y1]
+        cost_ce = 2.0 * ((cd_x1 - cd_x0) + (cd_y1 - cd_y0))
+        return if cost_base < cost_cd && cost_base < cost_ce
+        if cost_cd < cost_ce
+          a[:child2] = id; b[:child1] = ic; c[:parent] = ib; d[:parent] = ia
+          b[:aabb_x0] = ce_x0; b[:aabb_y0] = ce_y0; b[:aabb_x1] = ce_x1; b[:aabb_y1] = ce_y1
+          ch = c[:height]; eh = e[:height]; b[:height] = 1 + (ch > eh ? ch : eh)
+          bh = b[:height]; dh = d[:height]; a[:height] = 1 + (bh > dh ? bh : dh)
+        else
+          a[:child2] = ie; b[:child2] = ic; c[:parent] = ib; e[:parent] = ia
+          b[:aabb_x0] = cd_x0; b[:aabb_y0] = cd_y0; b[:aabb_x1] = cd_x1; b[:aabb_y1] = cd_y1
+          ch = c[:height]; dh = d[:height]; b[:height] = 1 + (ch > dh ? ch : dh)
+          bh = b[:height]; eh = e[:height]; a[:height] = 1 + (bh > eh ? bh : eh)
+        end
+      else
+        id = b[:child1]; ie = b[:child2]; iif = c[:child1]; ig = c[:child2]
+        d = nodes[id]; e = nodes[ie]; f = nodes[iif]; g = nodes[ig]
+        area_b = 2.0 * ((b[:aabb_x1] - b[:aabb_x0]) + (b[:aabb_y1] - b[:aabb_y0]))
+        area_c = 2.0 * ((c[:aabb_x1] - c[:aabb_x0]) + (c[:aabb_y1] - c[:aabb_y0]))
+        best_cost = area_b + area_c; best_rot = 0
+        bg_x0 = b[:aabb_x0] < g[:aabb_x0] ? b[:aabb_x0] : g[:aabb_x0]; bg_y0 = b[:aabb_y0] < g[:aabb_y0] ? b[:aabb_y0] : g[:aabb_y0]
+        bg_x1 = b[:aabb_x1] > g[:aabb_x1] ? b[:aabb_x1] : g[:aabb_x1]; bg_y1 = b[:aabb_y1] > g[:aabb_y1] ? b[:aabb_y1] : g[:aabb_y1]
+        cost = area_b + 2.0 * ((bg_x1 - bg_x0) + (bg_y1 - bg_y0))
+        if cost < best_cost; best_rot = 1; best_cost = cost; end
+        bf_x0 = b[:aabb_x0] < f[:aabb_x0] ? b[:aabb_x0] : f[:aabb_x0]; bf_y0 = b[:aabb_y0] < f[:aabb_y0] ? b[:aabb_y0] : f[:aabb_y0]
+        bf_x1 = b[:aabb_x1] > f[:aabb_x1] ? b[:aabb_x1] : f[:aabb_x1]; bf_y1 = b[:aabb_y1] > f[:aabb_y1] ? b[:aabb_y1] : f[:aabb_y1]
+        cost = area_b + 2.0 * ((bf_x1 - bf_x0) + (bf_y1 - bf_y0))
+        if cost < best_cost; best_rot = 2; best_cost = cost; end
+        ce_x0 = c[:aabb_x0] < e[:aabb_x0] ? c[:aabb_x0] : e[:aabb_x0]; ce_y0 = c[:aabb_y0] < e[:aabb_y0] ? c[:aabb_y0] : e[:aabb_y0]
+        ce_x1 = c[:aabb_x1] > e[:aabb_x1] ? c[:aabb_x1] : e[:aabb_x1]; ce_y1 = c[:aabb_y1] > e[:aabb_y1] ? c[:aabb_y1] : e[:aabb_y1]
+        cost = area_c + 2.0 * ((ce_x1 - ce_x0) + (ce_y1 - ce_y0))
+        if cost < best_cost; best_rot = 3; best_cost = cost; end
+        cd_x0 = c[:aabb_x0] < d[:aabb_x0] ? c[:aabb_x0] : d[:aabb_x0]; cd_y0 = c[:aabb_y0] < d[:aabb_y0] ? c[:aabb_y0] : d[:aabb_y0]
+        cd_x1 = c[:aabb_x1] > d[:aabb_x1] ? c[:aabb_x1] : d[:aabb_x1]; cd_y1 = c[:aabb_y1] > d[:aabb_y1] ? c[:aabb_y1] : d[:aabb_y1]
+        cost = area_c + 2.0 * ((cd_x1 - cd_x0) + (cd_y1 - cd_y0))
+        if cost < best_cost; best_rot = 4; end
+        if best_rot == 1
+          a[:child1] = iif; c[:child1] = ib; b[:parent] = ic; f[:parent] = ia
+          c[:aabb_x0] = bg_x0; c[:aabb_y0] = bg_y0; c[:aabb_x1] = bg_x1; c[:aabb_y1] = bg_y1
+          bh = b[:height]; gh = g[:height]; c[:height] = 1 + (bh > gh ? bh : gh)
+          ch = c[:height]; fh = f[:height]; a[:height] = 1 + (ch > fh ? ch : fh)
+        elsif best_rot == 2
+          a[:child1] = ig; c[:child2] = ib; b[:parent] = ic; g[:parent] = ia
+          c[:aabb_x0] = bf_x0; c[:aabb_y0] = bf_y0; c[:aabb_x1] = bf_x1; c[:aabb_y1] = bf_y1
+          bh = b[:height]; fh = f[:height]; c[:height] = 1 + (bh > fh ? bh : fh)
+          ch = c[:height]; gh = g[:height]; a[:height] = 1 + (ch > gh ? ch : gh)
+        elsif best_rot == 3
+          a[:child2] = id; b[:child1] = ic; c[:parent] = ib; d[:parent] = ia
+          b[:aabb_x0] = ce_x0; b[:aabb_y0] = ce_y0; b[:aabb_x1] = ce_x1; b[:aabb_y1] = ce_y1
+          ch = c[:height]; eh = e[:height]; b[:height] = 1 + (ch > eh ? ch : eh)
+          bh = b[:height]; dh = d[:height]; a[:height] = 1 + (bh > dh ? bh : dh)
+        elsif best_rot == 4
+          a[:child2] = ie; b[:child2] = ic; c[:parent] = ib; e[:parent] = ia
+          b[:aabb_x0] = cd_x0; b[:aabb_y0] = cd_y0; b[:aabb_x1] = cd_x1; b[:aabb_y1] = cd_y1
+          ch = c[:height]; dh = d[:height]; b[:height] = 1 + (ch > dh ? ch : dh)
+          bh = b[:height]; eh = e[:height]; a[:height] = 1 + (bh > eh ? bh : eh)
+        end
+      end
+    end
+
+    def tree_insert_leaf tree, leaf, should_rotate
+      if tree[:root] == nil
+        tree[:root] = leaf; tree[:nodes][leaf][:parent] = nil; return
+      end
+      nodes = tree[:nodes]; ln = nodes[leaf]
+      lx0 = ln[:aabb_x0]; ly0 = ln[:aabb_y0]; lx1 = ln[:aabb_x1]; ly1 = ln[:aabb_y1]
+      sibling = tree_find_best_sibling tree, lx0, ly0, lx1, ly1
+      old_parent = nodes[sibling][:parent]
+      new_parent = tree_alloc_node tree
+      nodes = tree[:nodes]; np = nodes[new_parent]; sn = nodes[sibling]; ln = nodes[leaf]
+      np[:parent] = old_parent; np[:user_data] = -1
+      sx0 = sn[:aabb_x0]; sy0 = sn[:aabb_y0]; sx1 = sn[:aabb_x1]; sy1 = sn[:aabb_y1]
+      np[:aabb_x0] = lx0 < sx0 ? lx0 : sx0; np[:aabb_y0] = ly0 < sy0 ? ly0 : sy0
+      np[:aabb_x1] = lx1 > sx1 ? lx1 : sx1; np[:aabb_y1] = ly1 > sy1 ? ly1 : sy1
+      np[:height] = sn[:height] + 1; np[:child1] = sibling; np[:child2] = leaf
+      sn[:parent] = new_parent; ln[:parent] = new_parent
+      if old_parent != nil
+        op = nodes[old_parent]
+        if op[:child1] == sibling; op[:child1] = new_parent; else; op[:child2] = new_parent; end
+      else
+        tree[:root] = new_parent
+      end
+      index = nodes[leaf][:parent]
+      while index != nil
+        n = nodes[index]; c1 = nodes[n[:child1]]; c2 = nodes[n[:child2]]
+        n[:aabb_x0] = c1[:aabb_x0] < c2[:aabb_x0] ? c1[:aabb_x0] : c2[:aabb_x0]
+        n[:aabb_y0] = c1[:aabb_y0] < c2[:aabb_y0] ? c1[:aabb_y0] : c2[:aabb_y0]
+        n[:aabb_x1] = c1[:aabb_x1] > c2[:aabb_x1] ? c1[:aabb_x1] : c2[:aabb_x1]
+        n[:aabb_y1] = c1[:aabb_y1] > c2[:aabb_y1] ? c1[:aabb_y1] : c2[:aabb_y1]
+        h1 = c1[:height]; h2 = c2[:height]; n[:height] = 1 + (h1 > h2 ? h1 : h2)
+        tree_rotate tree, index if should_rotate
+        index = n[:parent]
+      end
+    end
+
+    def tree_remove_leaf tree, leaf
+      if leaf == tree[:root]; tree[:root] = nil; return; end
+      nodes = tree[:nodes]; parent = nodes[leaf][:parent]
+      grand_parent = nodes[parent][:parent]
+      sibling = nodes[parent][:child1] == leaf ? nodes[parent][:child2] : nodes[parent][:child1]
+      if grand_parent != nil
+        gp = nodes[grand_parent]
+        if gp[:child1] == parent; gp[:child1] = sibling; else; gp[:child2] = sibling; end
+        nodes[sibling][:parent] = grand_parent; tree_free_node tree, parent
+        index = grand_parent
+        while index != nil
+          n = nodes[index]; c1 = nodes[n[:child1]]; c2 = nodes[n[:child2]]
+          n[:aabb_x0] = c1[:aabb_x0] < c2[:aabb_x0] ? c1[:aabb_x0] : c2[:aabb_x0]
+          n[:aabb_y0] = c1[:aabb_y0] < c2[:aabb_y0] ? c1[:aabb_y0] : c2[:aabb_y0]
+          n[:aabb_x1] = c1[:aabb_x1] > c2[:aabb_x1] ? c1[:aabb_x1] : c2[:aabb_x1]
+          n[:aabb_y1] = c1[:aabb_y1] > c2[:aabb_y1] ? c1[:aabb_y1] : c2[:aabb_y1]
+          h1 = c1[:height]; h2 = c2[:height]; n[:height] = 1 + (h1 > h2 ? h1 : h2)
+          index = n[:parent]
+        end
+      else
+        tree[:root] = sibling; nodes[sibling][:parent] = nil; tree_free_node tree, parent
+      end
+    end
+
+    def tree_create_proxy tree, shape_idx, x0, y0, x1, y1
+      proxy = tree_alloc_node tree; node = tree[:nodes][proxy]
+      node[:aabb_x0] = x0; node[:aabb_y0] = y0; node[:aabb_x1] = x1; node[:aabb_y1] = y1
+      node[:user_data] = shape_idx; node[:height] = 0
+      tree_insert_leaf tree, proxy, true; tree[:proxy_count] += 1; proxy
+    end
+
+    def tree_destroy_proxy tree, proxy_id
+      tree_remove_leaf tree, proxy_id; tree_free_node tree, proxy_id; tree[:proxy_count] -= 1
+    end
+
+    def tree_move_proxy tree, proxy_id, x0, y0, x1, y1
+      tree_remove_leaf tree, proxy_id; node = tree[:nodes][proxy_id]
+      node[:aabb_x0] = x0; node[:aabb_y0] = y0; node[:aabb_x1] = x1; node[:aabb_y1] = y1
+      tree_insert_leaf tree, proxy_id, false
+    end
+
+    def tree_query tree, qx0, qy0, qx1, qy1, skip_idx, candidates, seen
+      return if tree[:root] == nil
+      nodes = tree[:nodes]; stack = TREE_STACK; sp = 0
+      stack[sp] = tree[:root]; sp += 1
+      while sp > 0
+        sp -= 1; node_id = stack[sp]; n = nodes[node_id]
+        next if n[:aabb_x0] > qx1 || n[:aabb_x1] < qx0 || n[:aabb_y0] > qy1 || n[:aabb_y1] < qy0
+        if n[:height] == 0
+          ud = n[:user_data]; next if ud == skip_idx
+          lo = skip_idx < ud ? skip_idx : ud; hi = skip_idx < ud ? ud : skip_idx
+          pk = (lo << 16) | hi
+          unless seen[pk]; seen[pk] = true; candidates << lo << hi; end
+        else
+          stack[sp] = n[:child1]; sp += 1; stack[sp] = n[:child2]; sp += 1
+        end
+      end
+    end
+
+    def tree_reset tree
+      nodes = tree[:nodes]; cap = tree[:node_capacity]; i = 0
+      while i < cap
+        n = nodes[i]
+        if n
+          n[:height] = -1; n[:next_free] = i + 1 < cap ? i + 1 : nil
+          n[:child1] = nil; n[:child2] = nil; n[:parent] = nil; n[:user_data] = -1
+        end
+        i += 1
+      end
+      tree[:root] = nil; tree[:free_list] = 0; tree[:node_count] = 0; tree[:proxy_count] = 0
+    end
+
+    def compute_aabb_margin shape
+      t = shape[:type]
+      if t == :circle
+        ext = shape[:radius]
+      elsif t == :capsule
+        dx = shape[:x2] - shape[:x1]; dy = shape[:y2] - shape[:y1]
+        ext = Math.sqrt(dx * dx + dy * dy) * 0.5 + shape[:radius]
+      elsif t == :polygon
+        verts = shape[:vertices]; count = shape[:count]; ext = 0.0; i = 0
+        while i < count
+          i2 = i * 2; vx = verts[i2]; vy = verts[i2 + 1]
+          d = vx * vx + vy * vy; ext = d if d > ext; i += 1
+        end
+        ext = Math.sqrt(ext)
+      elsif t == :segment
+        dx = shape[:x2] - shape[:x1]; dy = shape[:y2] - shape[:y1]
+        ext = Math.sqrt(dx * dx + dy * dy) * 0.5
+      else
+        ext = 0.0
+      end
+      m = ext * AABB_MARGIN_FRAC; m < MAX_AABB_MARGIN ? m : MAX_AABB_MARGIN
+    end
+
+    def tree_broadphase world, shapes, bp, n, candidates, seen
+      st = bp[:static_tree] ||= tree_create
+      dt = bp[:dynamic_tree] ||= tree_create
+      if bp[:static_dirty] || bp[:static_shape_count] != n
+        tree_reset st
+        i = 0
+        while i < n
+          s = shapes[i]; b = find_body world, s[:body_id]
+          if b[:type] == :static || b[:sleeping]
+            compute_aabb s, b; pad = SPECULATIVE_DISTANCE
+            s[:proxy_id] = tree_create_proxy st, i,
+              s[:aabb_x0] - pad, s[:aabb_y0] - pad, s[:aabb_x1] + pad, s[:aabb_y1] + pad
+          end
+          i += 1
+        end
+        bp[:static_dirty] = false; bp[:static_shape_count] = n
+      end
+      i = 0
+      while i < n
+        s = shapes[i]; b = find_body world, s[:body_id]
+        if b[:type] == :static || b[:sleeping]
+          pid = s[:dyn_proxy_id]
+          if pid; tree_destroy_proxy dt, pid; s[:dyn_proxy_id] = nil; end
+        else
+          compute_aabb s, b; pid = s[:dyn_proxy_id]
+          if pid
+            unless s[:aabb_x0] >= s[:fat_x0] && s[:aabb_y0] >= s[:fat_y0] &&
+                   s[:aabb_x1] <= s[:fat_x1] && s[:aabb_y1] <= s[:fat_y1]
+              margin = s[:aabb_margin] ||= compute_aabb_margin(s)
+              pad = SPECULATIVE_DISTANCE + margin
+              fx0 = s[:aabb_x0] - pad; fy0 = s[:aabb_y0] - pad
+              fx1 = s[:aabb_x1] + pad; fy1 = s[:aabb_y1] + pad
+              tree_move_proxy dt, pid, fx0, fy0, fx1, fy1
+              s[:fat_x0] = fx0; s[:fat_y0] = fy0; s[:fat_x1] = fx1; s[:fat_y1] = fy1
+            end
+          else
+            margin = s[:aabb_margin] ||= compute_aabb_margin(s)
+            pad = SPECULATIVE_DISTANCE + margin
+            fx0 = s[:aabb_x0] - pad; fy0 = s[:aabb_y0] - pad
+            fx1 = s[:aabb_x1] + pad; fy1 = s[:aabb_y1] + pad
+            s[:dyn_proxy_id] = tree_create_proxy dt, i, fx0, fy0, fx1, fy1
+            s[:fat_x0] = fx0; s[:fat_y0] = fy0; s[:fat_x1] = fx1; s[:fat_y1] = fy1
+          end
+        end
+        i += 1
+      end
+      seen.clear; candidates.clear
+      i = 0
+      while i < n
+        s = shapes[i]; b = find_body world, s[:body_id]
+        unless b[:type] == :static || b[:sleeping]
+          qx0 = s[:fat_x0] || s[:aabb_x0]; qy0 = s[:fat_y0] || s[:aabb_y0]
+          qx1 = s[:fat_x1] || s[:aabb_x1]; qy1 = s[:fat_y1] || s[:aabb_y1]
+          tree_query dt, qx0, qy0, qx1, qy1, i, candidates, seen
+          tree_query st, qx0, qy0, qx1, qy1, i, candidates, seen
+        end
+        i += 1
+      end
+    end
+
     def find_contacts world
       shapes = world[:shapes]
       pairs = world[:pairs]
@@ -719,10 +1191,6 @@ module Physics
       cb_begin   = world[:on_contact_begin]
       cb_persist = world[:on_contact_persist]
       cb_end     = world[:on_contact_end]
-      shift = bp[:shift]
-      sc = bp[:static_cells]
-      dc = bp[:dynamic_cells]
-      pool = bp[:pool]
       seen = bp[:seen]
       candidates = bp[:candidates]
       n = shapes.length
@@ -733,78 +1201,10 @@ module Physics
         p[:stale] = !((ba[:type] == :static || ba[:sleeping]) && (bb[:type] == :static || bb[:sleeping]))
       end
 
-      # rebuild static hash only when dirty (sleep/wake transitions or new shapes)
-      if bp[:static_dirty] || bp[:static_shape_count] != n
-        sc.each_value { |arr| arr.clear; pool << arr }
-        sc.clear
-        i = 0
-        while i < n
-          s = shapes[i]
-          b = find_body world, s[:body_id]
-          if b[:type] == :static || b[:sleeping]
-            compute_aabb s, b
-            insert_shape sc, pool, shift, i, s
-          end
-          i += 1
-        end
-        bp[:static_dirty] = false
-        bp[:static_shape_count] = n
-      end
-
-      # rebuild dynamic hash every frame (awake shapes only)
-      dc.each_value { |arr| arr.clear; pool << arr }
-      dc.clear
-      i = 0
-      while i < n
-        s = shapes[i]
-        b = find_body world, s[:body_id]
-        unless b[:type] == :static || b[:sleeping]
-          compute_aabb s, b
-          insert_shape dc, pool, shift, i, s
-        end
-        i += 1
-      end
-
-      # collect candidate pairs: dynamic-vs-dynamic + dynamic-vs-static
-      seen.clear
-      candidates.clear
-
-      dc.each_value do |cell|
-        cn = cell.length
-        ci = 0
-        while ci < cn
-          ai = cell[ci]
-          cj = ci + 1
-          while cj < cn
-            bi = cell[cj]; cj += 1
-            lo = ai < bi ? ai : bi; hi = ai < bi ? bi : ai
-            pair_seen_key = (lo << 16) | hi
-            unless seen[pair_seen_key]
-              seen[pair_seen_key] = true
-              candidates << lo << hi
-            end
-          end
-          ci += 1
-        end
-      end
-
-      dc.each do |cell_key, dcell|
-        scell = sc[cell_key]
-        next unless scell
-        di = 0
-        while di < dcell.length
-          ai = dcell[di]; di += 1
-          si = 0
-          while si < scell.length
-            bi = scell[si]; si += 1
-            lo = ai < bi ? ai : bi; hi = ai < bi ? bi : ai
-            pair_seen_key = (lo << 16) | hi
-            unless seen[pair_seen_key]
-              seen[pair_seen_key] = true
-              candidates << lo << hi
-            end
-          end
-        end
+      if world[:broadphase_type] == :dynamic_tree
+        tree_broadphase world, shapes, bp, n, candidates, seen
+      else
+        spatial_hash_broadphase world, shapes, bp, n, candidates, seen
       end
 
       # build non-collide body-pair set from joints

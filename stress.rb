@@ -140,6 +140,12 @@ module StressTest
       if args.inputs.keyboard.key_down.d
         args.state.stress_debug_draw = !args.state.stress_debug_draw
       end
+      if args.inputs.keyboard.key_down.b
+        cur = args.state.world[:broadphase_type] || :spatial_hash
+        nxt = cur == :spatial_hash ? :dynamic_tree : :spatial_hash
+        Physics.set_broadphase_type args.state.world, nxt
+        $gtk.log "Broadphase: #{nxt}"
+      end
 
       args.state.stress_frame += 1
 
@@ -371,10 +377,21 @@ module StressTest
       scenario_name = STRESS_SCENARIOS[args.state.stress_scenario] || "?"
       gc_label = args.state.stress_gc_pressure ? " GC:ON" : ""
       agc_label = args.state.stress_gc_disabled ? " AGC:OFF" : ""
+      bp_type = (w[:broadphase_type] || :spatial_hash) == :dynamic_tree ? "DynTree" : "SpatHash"
+      bp_info = ""
+      if w[:broadphase_type] == :dynamic_tree
+        dtree = w[:broadphase][:dynamic_tree]
+        stree = w[:broadphase][:static_tree]
+        if dtree && stree
+          dh = dtree[:root] ? dtree[:nodes][dtree[:root]][:height] : 0
+          bp_info = " DNodes:#{dtree[:proxy_count]} DH:#{dh} SNodes:#{stree[:proxy_count]}"
+        end
+      end
+      cand_count = w[:broadphase][:candidates].length / 2
 
-      args.outputs.debug << "STRESS [#{scenario_name}] F:#{args.state.stress_frame} FPS:#{args.gtk.current_framerate.to_i}#{gc_label}#{agc_label}"
-      args.outputs.debug << "Bodies:#{dc} Sleep:#{sc_count} Pairs:#{pairs_count} Contacts:#{cp_count} CPool:#{Physics::CONTACT_POOL.length} PPool:#{Physics::PAIR_POOL.length}"
-      args.outputs.debug << "1-4=scenario G=gcPressure A=agcToggle D=debug R=reset Shift+S=back"
+      args.outputs.debug << "STRESS [#{scenario_name}] F:#{args.state.stress_frame} FPS:#{args.gtk.current_framerate.to_i}#{gc_label}#{agc_label} BP:#{bp_type}#{bp_info}"
+      args.outputs.debug << "Bodies:#{dc} Sleep:#{sc_count} Pairs:#{pairs_count} Contacts:#{cp_count} Cands:#{cand_count} CPool:#{Physics::CONTACT_POOL.length} PPool:#{Physics::PAIR_POOL.length}"
+      args.outputs.debug << "1-4=scenario B=broadphase G=gcPressure A=agcToggle D=debug R=reset Shift+S=back"
     end
 
   end

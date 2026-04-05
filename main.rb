@@ -1,5 +1,6 @@
 require 'app/physics.rb'
 require 'app/stress.rb'
+require 'app/benchmark.rb'
 
 DEG = 180.0 / Math::PI
 SLING_X = 180
@@ -696,11 +697,21 @@ def tick args
     return
   end
 
+  if args.inputs.keyboard.key_down.b && args.inputs.keyboard.shift
+    if args.state.mode == :benchmark
+      args.state.mode = :game; setup_level args
+    else
+      args.state.mode = :benchmark; BenchmarkTest.setup args
+    end
+    return
+  end
+
   case args.state.mode
   when :sandbox   then tick_sandbox args
   when :joints    then tick_joints_demo args
   when :stress    then StressTest.tick_stress args
   when :callbacks then tick_callback_demo args
+  when :benchmark then BenchmarkTest.tick_bench args
   else tick_game args
   end
 rescue => e

@@ -14,7 +14,7 @@ convex decomposition, and procedural shattering
 - **Collision filtering** — per-shape bitmask layer/mask with named layer support
 - **Constraint solver** — TGS-Soft iterative solver with sub-stepping and warm-starting
 - **Joints** — distance, revolute, prismatic, weld, wheel, motor
-- **Broadphase** — spatial hash, tunable with pow2 cell size
+- **Broadphase** — dynamic AABB tree (default) or spatial hash grid, switchable at runtime
 - **Callbacks** — world-level and per-body contact callbacks (begin/persist/end)
 - **Sleeping** — island-based sleeping
 - **Debug drawing** — contact points, AABBs, sleep state visualization
@@ -72,25 +72,35 @@ Creates a new physics world.
 
 **World configuration** (modify after creation):
 
-| Key                      | Default    | Description                          |
-|--------------------------|------------|--------------------------------------|
-| `gravity_x`              | `0.0`      | Horizontal gravity (pixels/s^2)      |
-| `gravity_y`              | `-980.0`   | Vertical gravity (pixels/s^2)        |
-| `dt`                     | `1/60.0`   | Time step (seconds)                  |
-| `sub_steps`              | `2`        | Solver sub-steps per frame           |
-| `velocity_iterations`    | `2`        | Velocity constraint iterations       |
-| `relax_iterations`       | `1`        | Relaxation iterations                |
-| `hertz`                  | `30.0`     | Contact softness frequency           |
-| `damping_ratio`          | `10.0`     | Contact softness damping             |
-| `contact_speed`          | `300.0`    | Maximum contact correction speed     |
-| `restitution_threshold`  | `100.0`    | Minimum speed for restitution        |
-| `max_linear_speed`       | `40000.0`  | Maximum body speed (pixels/s)        |
+| Key                      | Default          | Description                          |
+|--------------------------|------------------|--------------------------------------|
+| `broadphase_type`        | `:dynamic_tree`  | `:dynamic_tree` or `:spatial_hash`   |
+| `gravity_x`              | `0.0`            | Horizontal gravity (pixels/s^2)      |
+| `gravity_y`              | `-980.0`         | Vertical gravity (pixels/s^2)        |
+| `dt`                     | `1/60.0`         | Time step (seconds)                  |
+| `sub_steps`              | `2`              | Solver sub-steps per frame           |
+| `velocity_iterations`    | `2`              | Velocity constraint iterations       |
+| `relax_iterations`       | `1`              | Relaxation iterations                |
+| `hertz`                  | `30.0`           | Contact softness frequency           |
+| `damping_ratio`          | `10.0`           | Contact softness damping             |
+| `contact_speed`          | `300.0`          | Maximum contact correction speed     |
+| `restitution_threshold`  | `100.0`          | Minimum speed for restitution        |
+| `max_linear_speed`       | `40000.0`        | Maximum body speed (pixels/s)        |
+
+#### Broadphase
+
+The engine provides two broadphase algorithms, switchable at runtime:
+
+| Type             | Key              | Best for                                         |
+|------------------|------------------|--------------------------------------------------|
+| Dynamic AABB tree | `:dynamic_tree`  | General purpose, adaptive to varied shape sizes (default) |
+| Spatial hash grid | `:spatial_hash`  | Many similarly-sized shapes in a bounded area    |
 
 ```ruby
-Physics.set_broadphase_cell_size w, 128
+Physics.set_broadphase_type w, :spatial_hash    # switch to spatial hash
+Physics.set_broadphase_type w, :dynamic_tree    # switch back to tree (default)
+Physics.set_broadphase_cell_size w, 128         # tune spatial hash cell size (pow2)
 ```
-
-Sets the spatial hash cell size used for broadphase collision detection. The value is rounded up to the nearest power of 2.
 
 ```ruby
 Physics.tick w
@@ -368,18 +378,19 @@ Updates world-space vertices and AABBs for all shapes. Called automatically insi
 
 The `app/main.rb` and `app/stress.rb` files contain several interactive demos:
 
-| Mode     | Key          | Description                                      |
-|----------|--------------|--------------------------------------------------|
-| Game     | (default)    | Happy Dragons slingshot game                     |
-| Sandbox  | `Shift+T`    | Click to spawn shapes, Tab to cycle type         |
-| Joints   | `Shift+J`    | Joint demos (1-7 to switch scenes)               |
-| Stress   | `Shift+S`    | Stress tests (mass spawn, churn, GC, decomposed) |
-| Callbacks| `Shift+C`    | Visual callback demo (begin/persist/end effects)  |
+| Mode      | Key          | Description                                          |
+|-----------|--------------|------------------------------------------------------|
+| Game      | (default)    | Happy Dragons slingshot game                         |
+| Sandbox   | `Shift+T`    | Click to spawn shapes, Tab to cycle type             |
+| Joints    | `Shift+J`    | Joint demos (1-7 to switch scenes)                   |
+| Stress    | `Shift+S`    | Stress tests (mass spawn, churn, GC, decomposed)     |
+| Callbacks | `Shift+C`    | Visual callback demo (begin/persist/end effects)     |
+| Benchmark | `Shift+B`    | Broadphase A/B comparison (8 scenarios, 1-8 to pick) |
 
 
 ## Architecture
 
-- **Broadphase**: spatial hash with separate static and dynamic grids. Static grid rebuilds only when bodies sleep/wake.
+- **Broadphase**: dynamic AABB tree (default) with SAH insertion and cost-based rotation, inspired by Box2D. Alternative spatial hash grid also available.
 - **Solver**: TGS-Soft (Temporal Gauss-Seidel with soft constraints). Sub-stepped velocity integration with warm-started contact and joint impulses, followed by relaxation iterations.
 - **Islands**: union-find grouping of connected bodies via contacts and joints. Islands split via DFS when contacts break. Entire islands sleep/wake as a unit.
 
