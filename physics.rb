@@ -750,8 +750,7 @@ module Physics
       end
     end
 
-    # --- Spatial Hash Broadphase ---
-
+    # Spatial Hash Broadphase
     def spatial_hash_broadphase world, shapes, bp, n, candidates, seen
       shift = bp[:shift]; sc = bp[:static_cells]; dc = bp[:dynamic_cells]; pool = bp[:pool]
       if bp[:static_dirty] || bp[:static_shape_count] != n
@@ -806,8 +805,7 @@ module Physics
       end
     end
 
-    # --- Dynamic AABB Tree Broadphase ---
-
+    # Dynamic AABB Tree Broadphase
     def tree_create cap = 16
       nodes = Array.new(cap)
       i = 0
@@ -1541,7 +1539,6 @@ module Collide
       result[0] = best_sep; result[1] = best_idx
     end
 
-    # clip_polygons — Chipmunk-style symmetric edge clipping
     def clip_polygons va, na, ca, ra, vb, nb, cb, rb, edge_a, edge_b, flip
       if flip
         v1 = vb; n1 = nb; c1 = cb; r1 = rb
