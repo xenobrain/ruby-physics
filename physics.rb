@@ -23,7 +23,9 @@
 module Physics
   CONTACT_POOL ||= []
   PAIR_POOL    ||= []
-  LAYERS       ||= Hash.new { |h, k| raise "Max 32 layers" if h.size >= 32; h[k] = 1 << h.size }
+  LAYER_COUNT  ||= [0]
+  LAYERS       ||= Hash.new { |h, k| raise "Max 32 layers" if LAYER_COUNT[0] >= 32; bit = 1 << LAYER_COUNT[0]; LAYER_COUNT[0] += 1; h[k] = bit }
+  LAYERS[:all] = 0xFFFF unless LAYERS.key?(:all)
   MR           ||= { normal_x: 0.0, normal_y: 0.0, friction: 0.0, restitution: 0.0, points: [] }
   CP_RESULT    ||= [0.0, 0.0, 0.0]
   CPS_RESULT   ||= [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -70,18 +72,14 @@ module Physics
         contact_speed: 300.0,
         restitution_threshold: 100.0,
         max_linear_speed: 40000.0,
-        next_body_id: 0,
-        next_shape_id: 0,
         pair_list: [],
         contact_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         static_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         joints: [],
-        next_joint_id: 0,
         joint_hertz: 60.0,
         joint_damping_ratio: 1.0,
         joint_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
-        islands: {},
-        next_island_id: 0,
+        islands: [],
         on_contact_begin: nil,
         on_contact_persist: nil,
         on_contact_end: nil
@@ -112,11 +110,14 @@ module Physics
       body[:on_contact_end] = [receiver, method]
     end
 
+    def pair_key a, b
+      ai = a.object_id; bi = b.object_id
+      lo = ai < bi ? ai : bi; hi = ai < bi ? bi : ai
+      lo ^ (hi + 0x9e3779b9 + (lo << 6) + (lo >> 2))
+    end
+
     def create_body world, x: 0.0, y: 0.0, angle: 0.0, type: :dynamic, gravity_scale: 1.0, linear_damping: 0.0, angular_damping: 0.0
-      id = world[:next_body_id]
-      world[:next_body_id] = id + 1
       body = {
-        id: id,
         x: x.to_f, y: y.to_f, angle: angle.to_f,
         vx: 0.0, vy: 0.0, w: 0.0,
         fx: 0.0, fy: 0.0, torque: 0.0,
@@ -129,7 +130,7 @@ module Physics
         angular_damping: angular_damping.to_f,
         sleeping: false,
         sleep_time: 0.0,
-        island_id: -1,
+        island: nil,
         on_contact_begin: nil,
         on_contact_persist: nil,
         on_contact_end: nil
@@ -138,20 +139,16 @@ module Physics
     end
 
     def add_body world, body
-      body[:id] = world[:bodies].length
       world[:bodies] << body
       Islands.create_island world, body if body[:type] == :dynamic
       body
     end
 
-    def create_circle world, body_id:, radius:, offset_x: 0.0, offset_y: 0.0, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_circle body:, radius:, offset_x: 0.0, offset_y: 0.0, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       r = radius.to_f
-      id = world[:next_shape_id]
-      world[:next_shape_id] = id + 1
       shape = {
-        id: id,
         type: :circle,
-        body_id: body_id,
+        body: body,
         radius: r,
         offset_x: offset_x.to_f,
         offset_y: offset_y.to_f,
@@ -177,7 +174,7 @@ module Physics
       shape
     end
 
-    def create_polygon world, body_id:, vertices:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_polygon body:, vertices:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       n = vertices.length / 2
       return nil if n < 3
 
@@ -285,12 +282,9 @@ module Physics
         i += 1
       end
 
-      id = world[:next_shape_id]
-      world[:next_shape_id] = id + 1
       shape = {
-        id: id,
         type: :polygon,
-        body_id: body_id,
+        body: body,
         vertices: verts,
         normals: norms,
         count: count,
@@ -313,22 +307,20 @@ module Physics
       shape
     end
 
-    def create_box world, body_id:, w:, h:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_box body:, w:, h:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       hw = w.to_f * 0.5
       hh = h.to_f * 0.5
       verts = [-hw, -hh, hw, -hh, hw, hh, -hw, hh]
-      create_polygon world, body_id: body_id, vertices: verts, density: density, friction: friction, restitution: restitution, rolling_resistance: rolling_resistance, tangent_speed: tangent_speed, layer: layer, mask: mask
+      create_polygon body: body, vertices: verts, density: density, friction: friction, restitution: restitution, rolling_resistance: rolling_resistance, tangent_speed: tangent_speed, layer: layer, mask: mask
     end
 
-    def create_capsule world, body_id:, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0, radius:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_capsule body:, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0, radius:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       r = radius.to_f
       ax = x1.to_f; ay = y1.to_f
       bx = x2.to_f; by = y2.to_f
 
-      id = world[:next_shape_id]
-      world[:next_shape_id] = id + 1
       shape = {
-        id: id, type: :capsule, body_id: body_id,
+        type: :capsule, body: body,
         x1: ax, y1: ay, x2: bx, y2: by, radius: r,
         friction: friction.to_f, restitution: restitution.to_f,
         rolling_resistance: rolling_resistance.to_f, tangent_speed: tangent_speed.to_f,
@@ -354,11 +346,9 @@ module Physics
       shape
     end
 
-    def create_segment world, body_id:, x1:, y1:, x2:, y2:, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
-      id = world[:next_shape_id]
-      world[:next_shape_id] = id + 1
+    def create_segment body:, x1:, y1:, x2:, y2:, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       shape = {
-        id: id, type: :segment, body_id: body_id,
+        type: :segment, body: body,
         x1: x1.to_f, y1: y1.to_f, x2: x2.to_f, y2: y2.to_f, radius: 0.0,
         friction: friction.to_f, restitution: restitution.to_f,
         rolling_resistance: rolling_resistance.to_f, tangent_speed: tangent_speed.to_f,
@@ -375,9 +365,8 @@ module Physics
     end
 
     def add_shape world, shape
-      shape[:id] = world[:shapes].length
       world[:shapes] << shape
-      body = find_body world, shape[:body_id]
+      body = shape[:body]
       if body[:type] == :dynamic
         body[:mass] += shape[:mass]
         body[:inertia] += shape[:inertia]
@@ -427,9 +416,8 @@ module Physics
       end
       bp[:static_dirty] = true
 
-      sid = shape[:id]
       world[:pairs].delete_if do |_k, p|
-        if p[:shape_a_id] == sid || p[:shape_b_id] == sid
+        if p[:shape_a].equal?(shape) || p[:shape_b].equal?(shape)
           Islands.unlink_contact world, p if p[:touching]
           pts = p[:manifold][:points]
           while pts.length > 0; CONTACT_POOL << pts.pop; end
@@ -438,7 +426,7 @@ module Physics
         end
       end
 
-      body = find_body world, shape[:body_id]
+      body = shape[:body]
       if body[:type] == :dynamic
         body[:mass] -= shape[:mass]
         body[:inertia] -= shape[:inertia]
@@ -451,25 +439,25 @@ module Physics
       end
 
       shapes = world[:shapes]
-      idx = shape[:id]
-      last_idx = shapes.length - 1
-      if idx != last_idx
-        moved = shapes[last_idx]
-        shapes[idx] = moved
-        moved[:id] = idx
-        fix_shape_references world, last_idx, idx
+      idx = nil
+      i = 0
+      while i < shapes.length
+        if shapes[i].equal?(shape); idx = i; break; end
+        i += 1
       end
-      shapes.pop
+      if idx
+        last_idx = shapes.length - 1
+        shapes[idx] = shapes[last_idx] if idx != last_idx
+        shapes.pop
+      end
       shape
     end
 
     def remove_body world, body
-      bid = body[:id]
-
       shapes = world[:shapes]
       i = shapes.length - 1
       while i >= 0
-        remove_shape world, shapes[i] if shapes[i][:body_id] == bid
+        remove_shape world, shapes[i] if shapes[i][:body].equal?(body)
         i -= 1
       end
 
@@ -477,103 +465,31 @@ module Physics
       i = joints.length - 1
       while i >= 0
         j = joints[i]
-        Joints.remove_joint(world, j) if j[:body_a_id] == bid || j[:body_b_id] == bid
+        Joints.remove_joint(world, j) if j[:body_a].equal?(body) || j[:body_b].equal?(body)
         i -= 1
       end
 
-      if body[:island_id] >= 0
-        island = world[:islands][body[:island_id]]
-        if island
-          island[:body_ids].delete bid
-          world[:islands].delete(island[:id]) if island[:body_ids].empty?
-        end
+      if body[:island]
+        island = body[:island]
+        island[:bodies].delete(body)
+        world[:islands].delete(island) if island[:bodies].empty?
       end
 
       bodies = world[:bodies]
-      idx = body[:id]
-      last_idx = bodies.length - 1
-      if idx != last_idx
-        moved = bodies[last_idx]
-        bodies[idx] = moved
-        moved[:id] = idx
-        fix_body_references world, last_idx, idx
+      idx = nil
+      i = 0
+      while i < bodies.length
+        if bodies[i].equal?(body); idx = i; break; end
+        i += 1
       end
-      bodies.pop
+      if idx
+        last_idx = bodies.length - 1
+        bodies[idx] = bodies[last_idx] if idx != last_idx
+        bodies.pop
+      end
       body
     end
 
-    def find_body world, body_id
-      world[:bodies][body_id]
-    end
-
-    def find_shape world, shape_id
-      world[:shapes][shape_id]
-    end
-
-    def fix_shape_references world, old_id, new_id
-      bp = world[:broadphase]
-      dt = bp[:dynamic_tree]
-      moved = world[:shapes][new_id]
-      if moved[:dyn_proxy_id] && dt
-        node = dt[:nodes][moved[:dyn_proxy_id]]
-        node[:user_data] = new_id if node
-      end
-      bp[:static_dirty] = true
-
-      pairs = world[:pairs]
-      rekey = nil
-      pairs.each do |key, p|
-        changed = false
-        if p[:shape_a_id] == old_id
-          p[:shape_a_id] = new_id; changed = true
-        end
-        if p[:shape_b_id] == old_id
-          p[:shape_b_id] = new_id; changed = true
-        end
-        if changed
-          rekey ||= []
-          rekey << key
-        end
-      end
-      if rekey
-        i = 0
-        while i < rekey.length
-          p = pairs.delete rekey[i]; i += 1
-          min_id = p[:shape_a_id] < p[:shape_b_id] ? p[:shape_a_id] : p[:shape_b_id]
-          max_id = p[:shape_a_id] < p[:shape_b_id] ? p[:shape_b_id] : p[:shape_a_id]
-          pairs[(min_id << 16) | max_id] = p
-        end
-      end
-    end
-
-    def fix_body_references world, old_id, new_id
-      shapes = world[:shapes]
-      i = 0
-      while i < shapes.length
-        shapes[i][:body_id] = new_id if shapes[i][:body_id] == old_id
-        i += 1
-      end
-
-      joints = world[:joints]
-      i = 0
-      while i < joints.length
-        j = joints[i]
-        j[:body_a_id] = new_id if j[:body_a_id] == old_id
-        j[:body_b_id] = new_id if j[:body_b_id] == old_id
-        i += 1
-      end
-
-      world[:pairs].each_value do |p|
-        p[:body_a_id] = new_id if p[:body_a_id] == old_id
-        p[:body_b_id] = new_id if p[:body_b_id] == old_id
-      end
-
-      world[:islands].each_value do |island|
-        bids = island[:body_ids]
-        idx = bids.index old_id
-        bids[idx] = new_id if idx
-      end
-    end
 
     def tick world
       dt = world[:dt]
@@ -590,9 +506,7 @@ module Physics
       pl.clear
       world[:pairs].each_value do |v|
         next unless v[:touching]
-        ba = find_body world, v[:body_a_id]
-        bb = find_body world, v[:body_b_id]
-        next if ba[:sleeping] || bb[:sleeping]
+        next if v[:body_a][:sleeping] || v[:body_b][:sleeping]
         pl << v
       end
 
@@ -708,30 +622,24 @@ module Physics
       end
     end
 
-    def apply_force world, body_id, fx, fy
-      b = find_body world, body_id
-      return unless b
-      b[:fx] += fx.to_f; b[:fy] += fy.to_f
-      Islands.wake_body world, b if b[:sleeping]
+    def apply_force world, body, fx, fy
+      body[:fx] += fx.to_f; body[:fy] += fy.to_f
+      Islands.wake_body world, body if body[:sleeping]
     end
 
-    def apply_impulse world, body_id, ix, iy, px = nil, py = nil
-      b = find_body world, body_id
-      return unless b
-      Islands.wake_body world, b if b[:sleeping]
-      b[:vx] += b[:inv_mass] * ix.to_f
-      b[:vy] += b[:inv_mass] * iy.to_f
+    def apply_impulse world, body, ix, iy, px = nil, py = nil
+      Islands.wake_body world, body if body[:sleeping]
+      body[:vx] += body[:inv_mass] * ix.to_f
+      body[:vy] += body[:inv_mass] * iy.to_f
       if px && py
-        rx = px.to_f - b[:x]; ry = py.to_f - b[:y]
-        b[:w] += b[:inv_inertia] * (rx * iy.to_f - ry * ix.to_f)
+        rx = px.to_f - body[:x]; ry = py.to_f - body[:y]
+        body[:w] += body[:inv_inertia] * (rx * iy.to_f - ry * ix.to_f)
       end
     end
 
-    def apply_torque world, body_id, t
-      b = find_body world, body_id
-      return unless b
-      b[:torque] += t.to_f
-      Islands.wake_body world, b if b[:sleeping]
+    def apply_torque world, body, t
+      body[:torque] += t.to_f
+      Islands.wake_body world, body if body[:sleeping]
     end
 
     def set_broadphase_cell_size world, size
@@ -768,27 +676,21 @@ module Physics
       end
     end
 
-    def set_mass world, body_id, mass
-      b = find_body world, body_id
-      return unless b
+    def set_mass world, body, mass
       mass = mass.to_f; mass = 0.0 if mass < 0.0
-      b[:mass] = mass; b[:inv_mass] = mass > 0.0 ? 1.0 / mass : 0.0
-      Islands.wake_body world, b if b[:sleeping]
+      body[:mass] = mass; body[:inv_mass] = mass > 0.0 ? 1.0 / mass : 0.0
+      Islands.wake_body world, body if body[:sleeping]
     end
 
-    def set_inertia world, body_id, inertia
-      b = find_body world, body_id
-      return unless b
+    def set_inertia world, body, inertia
       inertia = inertia.to_f; inertia = 0.0 if inertia < 0.0
-      b[:inertia] = inertia; b[:inv_inertia] = inertia > 0.0 ? 1.0 / inertia : 0.0
-      Islands.wake_body world, b if b[:sleeping]
+      body[:inertia] = inertia; body[:inv_inertia] = inertia > 0.0 ? 1.0 / inertia : 0.0
+      Islands.wake_body world, body if body[:sleeping]
     end
 
-    def set_velocity world, body_id, vx, vy
-      b = find_body world, body_id
-      return unless b
-      b[:vx] = vx.to_f; b[:vy] = vy.to_f
-      Islands.wake_body world, b if b[:sleeping]
+    def set_velocity world, body, vx, vy
+      body[:vx] = vx.to_f; body[:vy] = vy.to_f
+      Islands.wake_body world, body if body[:sleeping]
     end
 
     def body_at_point world, px, py
@@ -796,7 +698,7 @@ module Physics
       i = 0
       while i < shapes.length
         s = shapes[i]; i += 1
-        b = find_body world, s[:body_id]
+        b = s[:body]
         t = s[:type]
         if t == :circle
           cx = b[:x] + s[:offset_x]; cy = b[:y] + s[:offset_y]
@@ -833,7 +735,7 @@ module Physics
       i = 0
       while i < shapes.length
         s = shapes[i]; i += 1
-        b = find_body world, s[:body_id]
+        b = s[:body]
         t = s[:type]
         if b[:sleeping]
           next if t != :polygon || s[:world_vertices]
@@ -910,7 +812,7 @@ module Physics
       end
     end
 
-    def insert_shape cells, pool, shift, i, s
+    def insert_shape cells, pool, shift, s
       ax0 = s[:aabb_x0]; ay0 = s[:aabb_y0]; ax1 = s[:aabb_x1]; ay1 = s[:aabb_y1]
       return if ax0 != ax0 || ay0 != ay0 || ax1 != ax1 || ay1 != ay1 || ax0 > ax1 || ay0 > ay1 || ax0 < -10000 || ax1 > 20000
       x0 = (ax0 - SPECULATIVE_DISTANCE).floor >> shift
@@ -928,7 +830,7 @@ module Physics
             cell = pool.pop || []
             cells[cell_key] = cell
           end
-          cell << i
+          cell << s
           cy += 1
         end
         cx += 1
@@ -944,9 +846,9 @@ module Physics
         sc.clear
         i = 0
         while i < n
-          s = shapes[i]; b = find_body world, s[:body_id]
+          s = shapes[i]; b = s[:body]
           if b[:type] == :static || b[:sleeping]
-            compute_aabb s, b; insert_shape sc, pool, shift, i, s
+            compute_aabb s, b; insert_shape sc, pool, shift, s
           end
           i += 1
         end
@@ -956,9 +858,9 @@ module Physics
       dc.clear
       i = 0
       while i < n
-        s = shapes[i]; b = find_body world, s[:body_id]
+        s = shapes[i]; b = s[:body]
         unless b[:type] == :static || b[:sleeping]
-          compute_aabb s, b; insert_shape dc, pool, shift, i, s
+          compute_aabb s, b; insert_shape dc, pool, shift, s
         end
         i += 1
       end
@@ -966,12 +868,11 @@ module Physics
       dc.each_value do |cell|
         cn = cell.length; ci = 0
         while ci < cn
-          ai = cell[ci]; cj = ci + 1
+          sa = cell[ci]; cj = ci + 1
           while cj < cn
-            bi = cell[cj]; cj += 1
-            lo = ai < bi ? ai : bi; hi = ai < bi ? bi : ai
-            pk = (lo << 16) | hi
-            unless seen[pk]; seen[pk] = true; candidates << lo << hi; end
+            sb = cell[cj]; cj += 1
+            pk = pair_key(sa, sb)
+            unless seen[pk]; seen[pk] = true; candidates << sa << sb; end
           end
           ci += 1
         end
@@ -980,12 +881,11 @@ module Physics
         scell = sc[cell_key]; next unless scell
         di = 0
         while di < dcell.length
-          ai = dcell[di]; di += 1; si = 0
+          sa = dcell[di]; di += 1; si = 0
           while si < scell.length
-            bi = scell[si]; si += 1
-            lo = ai < bi ? ai : bi; hi = ai < bi ? bi : ai
-            pk = (lo << 16) | hi
-            unless seen[pk]; seen[pk] = true; candidates << lo << hi; end
+            sb = scell[si]; si += 1
+            pk = pair_key(sa, sb)
+            unless seen[pk]; seen[pk] = true; candidates << sa << sb; end
           end
         end
       end
@@ -1238,10 +1138,10 @@ module Physics
       end
     end
 
-    def tree_create_proxy tree, shape_idx, x0, y0, x1, y1
+    def tree_create_proxy tree, shape, x0, y0, x1, y1
       proxy = tree_alloc_node tree; node = tree[:nodes][proxy]
       node[:aabb_x0] = x0; node[:aabb_y0] = y0; node[:aabb_x1] = x1; node[:aabb_y1] = y1
-      node[:user_data] = shape_idx; node[:height] = 0
+      node[:user_data] = shape; node[:height] = 0
       tree_insert_leaf tree, proxy, true; tree[:proxy_count] += 1; proxy
     end
 
@@ -1255,7 +1155,7 @@ module Physics
       tree_insert_leaf tree, proxy_id, false
     end
 
-    def tree_query tree, qx0, qy0, qx1, qy1, skip_idx, candidates, seen
+    def tree_query tree, qx0, qy0, qx1, qy1, query_shape, candidates, seen
       return if tree[:root] == nil
       nodes = tree[:nodes]; stack = TREE_STACK; sp = 0
       stack[sp] = tree[:root]; sp += 1
@@ -1263,10 +1163,9 @@ module Physics
         sp -= 1; node_id = stack[sp]; n = nodes[node_id]
         next if n[:aabb_x0] > qx1 || n[:aabb_x1] < qx0 || n[:aabb_y0] > qy1 || n[:aabb_y1] < qy0
         if n[:height] == 0
-          ud = n[:user_data]; next if ud == skip_idx
-          lo = skip_idx < ud ? skip_idx : ud; hi = skip_idx < ud ? ud : skip_idx
-          pk = (lo << 16) | hi
-          unless seen[pk]; seen[pk] = true; candidates << lo << hi; end
+          other = n[:user_data]; next if other.equal?(query_shape)
+          pk = pair_key(query_shape, other)
+          unless seen[pk]; seen[pk] = true; candidates << query_shape << other; end
         else
           stack[sp] = n[:child1]; sp += 1; stack[sp] = n[:child2]; sp += 1
         end
@@ -1316,10 +1215,10 @@ module Physics
         tree_reset st
         i = 0
         while i < n
-          s = shapes[i]; b = find_body world, s[:body_id]
+          s = shapes[i]; b = s[:body]
           if b[:type] == :static || b[:sleeping]
             compute_aabb s, b; pad = SPECULATIVE_DISTANCE
-            s[:proxy_id] = tree_create_proxy st, i,
+            s[:proxy_id] = tree_create_proxy st, s,
               s[:aabb_x0] - pad, s[:aabb_y0] - pad, s[:aabb_x1] + pad, s[:aabb_y1] + pad
           end
           i += 1
@@ -1328,7 +1227,7 @@ module Physics
       end
       i = 0
       while i < n
-        s = shapes[i]; b = find_body world, s[:body_id]
+        s = shapes[i]; b = s[:body]
         if b[:type] == :static || b[:sleeping]
           pid = s[:dyn_proxy_id]
           if pid; tree_destroy_proxy dt, pid; s[:dyn_proxy_id] = nil; end
@@ -1349,7 +1248,7 @@ module Physics
             pad = SPECULATIVE_DISTANCE + margin
             fx0 = s[:aabb_x0] - pad; fy0 = s[:aabb_y0] - pad
             fx1 = s[:aabb_x1] + pad; fy1 = s[:aabb_y1] + pad
-            s[:dyn_proxy_id] = tree_create_proxy dt, i, fx0, fy0, fx1, fy1
+            s[:dyn_proxy_id] = tree_create_proxy dt, s, fx0, fy0, fx1, fy1
             s[:fat_x0] = fx0; s[:fat_y0] = fy0; s[:fat_x1] = fx1; s[:fat_y1] = fy1
           end
         end
@@ -1358,12 +1257,12 @@ module Physics
       seen.clear; candidates.clear
       i = 0
       while i < n
-        s = shapes[i]; b = find_body world, s[:body_id]
+        s = shapes[i]; b = s[:body]
         unless b[:type] == :static || b[:sleeping]
           qx0 = s[:fat_x0] || s[:aabb_x0]; qy0 = s[:fat_y0] || s[:aabb_y0]
           qx1 = s[:fat_x1] || s[:aabb_x1]; qy1 = s[:fat_y1] || s[:aabb_y1]
-          tree_query dt, qx0, qy0, qx1, qy1, i, candidates, seen
-          tree_query st, qx0, qy0, qx1, qy1, i, candidates, seen
+          tree_query dt, qx0, qy0, qx1, qy1, s, candidates, seen
+          tree_query st, qx0, qy0, qx1, qy1, s, candidates, seen
         end
         i += 1
       end
@@ -1381,8 +1280,7 @@ module Physics
       n = shapes.length
 
       pairs.each_value do |p|
-        ba = find_body world, p[:body_a_id]
-        bb = find_body world, p[:body_b_id]
+        ba = p[:body_a]; bb = p[:body_b]
         p[:stale] = !((ba[:type] == :static || ba[:sleeping]) && (bb[:type] == :static || bb[:sleeping]))
       end
 
@@ -1400,36 +1298,29 @@ module Physics
       while ji < joints.length
         jt = joints[ji]; ji += 1
         next if jt[:collide_connected]
-        a = jt[:body_a_id]; b = jt[:body_b_id]
-        jlo = a < b ? a : b; jhi = a < b ? b : a
-        no_collide[(jlo << 16) | jhi] = true
+        no_collide[Physics.pair_key(jt[:body_a], jt[:body_b])] = true
       end
 
-      # narrowphase on candidates
+      # narrowphase on candidates (candidates are shape refs now)
       ci = 0
       while ci < candidates.length
-        lo = candidates[ci]; hi = candidates[ci + 1]; ci += 2
-        sa = shapes[lo]; sb = shapes[hi]
-        body_a_id = sa[:body_id]; body_b_id = sb[:body_id]
-        next if body_a_id == body_b_id
+        sa = candidates[ci]; sb = candidates[ci + 1]; ci += 2
+        ba = sa[:body]; bb = sb[:body]
+        next if ba.equal?(bb)
         next if (sa[:layer] & sb[:mask]) == 0 || (sb[:layer] & sa[:mask]) == 0
-        blo = body_a_id < body_b_id ? body_a_id : body_b_id
-        bhi = body_a_id < body_b_id ? body_b_id : body_a_id
-        next if no_collide[(blo << 16) | bhi]
-        ba = find_body world, body_a_id
-        bb = find_body world, body_b_id
+        next if no_collide[Physics.pair_key(ba, bb)]
         next if ba[:type] != :dynamic && bb[:type] != :dynamic
         next if ba[:sleeping] && bb[:sleeping]
 
-        min_id = sa[:id] < sb[:id] ? sa[:id] : sb[:id]
-        max_id = sa[:id] < sb[:id] ? sb[:id] : sa[:id]
-        key = (min_id << 16) | max_id
+        key = Physics.pair_key(sa, sb)
 
         pair = pairs[key]
         if pair
           # existing contact — AABB still overlaps, keep alive
           pair[:stale] = false
-          manifold = Collide.collide sa, ba, sb, bb
+          # collide using the pair's stored shape/body order for consistent normals
+          pa = pair[:shape_a]; pb = pair[:shape_b]
+          manifold = Collide.collide pa, pa[:body], pb, pb[:body]
           was_touching = pair[:touching]
           if manifold
             # update manifold with warm-started impulses
@@ -1490,7 +1381,7 @@ module Physics
           # new candidate — narrowphase decides
           manifold = Collide.collide sa, ba, sb, bb
           next unless manifold
-          flip = sa[:id] >= sb[:id]
+          flip = sa.object_id >= sb.object_id
           new_nx = manifold[:normal_x]; new_ny = manifold[:normal_y]
           new_fr = manifold[:friction]; new_re = manifold[:restitution]
           if flip
@@ -1504,6 +1395,7 @@ module Physics
             end
           end
           s1 = flip ? sb : sa; s2 = flip ? sa : sb
+          b1 = s1[:body]; b2 = s2[:body]
           rr_a = sa[:rolling_resistance]; rr_b = sb[:rolling_resistance]
           if rr_a > 0.0 || rr_b > 0.0
             max_r = sa[:radius] > sb[:radius] ? sa[:radius] : sb[:radius]
@@ -1514,8 +1406,8 @@ module Physics
           new_ts = sa[:tangent_speed] + sb[:tangent_speed]
           new_pair = PAIR_POOL.pop
           if new_pair
-            new_pair[:shape_a_id] = s1[:id]; new_pair[:shape_b_id] = s2[:id]
-            new_pair[:body_a_id] = s1[:body_id]; new_pair[:body_b_id] = s2[:body_id]
+            new_pair[:shape_a] = s1; new_pair[:shape_b] = s2
+            new_pair[:body_a] = b1; new_pair[:body_b] = b2
             nm = new_pair[:manifold]
             nm[:normal_x] = new_nx; nm[:normal_y] = new_ny
             nm[:friction] = new_fr; nm[:restitution] = new_re
@@ -1532,8 +1424,8 @@ module Physics
             src_pts = manifold[:points]; spi = 0
             while spi < src_pts.length; nm_points << src_pts[spi]; spi += 1; end
             src_pts.clear
-            new_pair = { shape_a_id: s1[:id], shape_b_id: s2[:id],
-                         body_a_id: s1[:body_id], body_b_id: s2[:body_id],
+            new_pair = { shape_a: s1, shape_b: s2,
+                         body_a: b1, body_b: b2,
                          manifold: { normal_x: new_nx, normal_y: new_ny,
                                      friction: new_fr, restitution: new_re,
                                      points: nm_points },
@@ -1543,8 +1435,6 @@ module Physics
           end
           pairs[key] = new_pair
           Islands.link_contact world, new_pair
-          b1 = find_body world, new_pair[:body_a_id]
-          b2 = find_body world, new_pair[:body_b_id]
           if cb_begin; cb_begin[0].send cb_begin[1], b1, b2, new_pair; end
           bcb = b1[:on_contact_begin]; if bcb; bcb[0].send bcb[1], b1, b2, new_pair; end
           bcb = b2[:on_contact_begin]; if bcb; bcb[0].send bcb[1], b2, b1, new_pair; end
@@ -1555,8 +1445,7 @@ module Physics
       pairs.delete_if do |_k, v|
         if v[:stale]
           if v[:touching]
-            sba = find_body world, v[:body_a_id]
-            sbb = find_body world, v[:body_b_id]
+            sba = v[:body_a]; sbb = v[:body_b]
             if cb_end; cb_end[0].send cb_end[1], sba, sbb, v; end
             bcb = sba[:on_contact_end]; if bcb; bcb[0].send bcb[1], sba, sbb, v; end
             bcb = sbb[:on_contact_end]; if bcb; bcb[0].send bcb[1], sbb, sba, v; end
@@ -2153,8 +2042,8 @@ module Solver
       pli = 0
       while pli < pair_list.length
         pair = pair_list[pli]; pli += 1
-        ba = Physics.find_body world, pair[:body_a_id]
-        bb = Physics.find_body world, pair[:body_b_id]
+        ba = pair[:body_a]
+        bb = pair[:body_b]
         manifold = pair[:manifold]
 
         if ba[:type] != :dynamic || bb[:type] != :dynamic
@@ -2201,8 +2090,8 @@ module Solver
       pli = 0
       while pli < pair_list.length
         pair = pair_list[pli]; pli += 1
-        ba = Physics.find_body world, pair[:body_a_id]
-        bb = Physics.find_body world, pair[:body_b_id]
+        ba = pair[:body_a]
+        bb = pair[:body_b]
         manifold = pair[:manifold]
         nx = manifold[:normal_x]; ny = manifold[:normal_y]
         tx = ny; ty = -nx
@@ -2244,8 +2133,8 @@ module Solver
       pli = 0
       while pli < pair_list.length
         pair = pair_list[pli]; pli += 1
-        ba = Physics.find_body world, pair[:body_a_id]
-        bb = Physics.find_body world, pair[:body_b_id]
+        ba = pair[:body_a]
+        bb = pair[:body_b]
         manifold = pair[:manifold]; softness = pair[:softness]
         ma = ba[:inv_mass]; ia = ba[:inv_inertia]
         mb = bb[:inv_mass]; ib = bb[:inv_inertia]
@@ -2340,8 +2229,8 @@ module Solver
         pair = pair_list[pli]; pli += 1
         manifold = pair[:manifold]; restitution = manifold[:restitution]
         next if restitution == 0.0
-        ba = Physics.find_body world, pair[:body_a_id]
-        bb = Physics.find_body world, pair[:body_b_id]
+        ba = pair[:body_a]
+        bb = pair[:body_b]
         ma = ba[:inv_mass]; ia = ba[:inv_inertia]
         mb = bb[:inv_mass]; ib = bb[:inv_inertia]
         vax = ba[:vx]; vay = ba[:vy]; wa = ba[:w]
@@ -2379,7 +2268,7 @@ end
 module Joints
   class << self
     #  Distance Joint
-    def create_distance_joint world, body_a_id:, body_b_id:,
+    def create_distance_joint world, body_a:, body_b:,
                               local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                               local_anchor_bx: 0.0, local_anchor_by: 0.0,
                               length: nil, hertz: 0.0, damping_ratio: 0.0,
@@ -2387,7 +2276,7 @@ module Joints
                               max_motor_force: 0.0, motor_speed: 0.0,
                               enable_spring: false, enable_limit: false, enable_motor: false,
                               collide_connected: false
-      ba = world[:bodies][body_a_id]; bb = world[:bodies][body_b_id]
+      ba = body_a; bb = body_b
       lax = local_anchor_ax.to_f; lay = local_anchor_ay.to_f
       lbx = local_anchor_bx.to_f; lby = local_anchor_by.to_f
       unless length
@@ -2403,9 +2292,8 @@ module Joints
       end
       min_length = min_length ? min_length.to_f : length
       max_length = max_length ? max_length.to_f : length
-      id = world[:next_joint_id]; world[:next_joint_id] = id + 1
       j = {
-        id: id, type: :distance, body_a_id: body_a_id, body_b_id: body_b_id,
+        type: :distance, body_a: body_a, body_b: body_b,
         local_anchor_ax: lax, local_anchor_ay: lay,
         local_anchor_bx: lbx, local_anchor_by: lby,
         collide_connected: collide_connected,
@@ -2424,7 +2312,7 @@ module Joints
     end
 
     # Revolute Joint
-    def create_revolute_joint world, body_a_id:, body_b_id:,
+    def create_revolute_joint world, body_a:, body_b:,
                               local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                               local_anchor_bx: 0.0, local_anchor_by: 0.0,
                               reference_angle: nil,
@@ -2433,11 +2321,10 @@ module Joints
                               max_motor_torque: 0.0, motor_speed: 0.0,
                               enable_spring: false, enable_motor: false, enable_limit: false,
                               collide_connected: false
-      ba = world[:bodies][body_a_id]; bb = world[:bodies][body_b_id]
+      ba = body_a; bb = body_b
       ref = reference_angle ? reference_angle.to_f : (bb[:angle] - ba[:angle])
-      id = world[:next_joint_id]; world[:next_joint_id] = id + 1
       j = {
-        id: id, type: :revolute, body_a_id: body_a_id, body_b_id: body_b_id,
+        type: :revolute, body_a: body_a, body_b: body_b,
         local_anchor_ax: local_anchor_ax.to_f, local_anchor_ay: local_anchor_ay.to_f,
         local_anchor_bx: local_anchor_bx.to_f, local_anchor_by: local_anchor_by.to_f,
         local_frame_a_cos: 1.0, local_frame_a_sin: 0.0,
@@ -2459,7 +2346,7 @@ module Joints
     end
 
     # Prismatic Joint
-    def create_prismatic_joint world, body_a_id:, body_b_id:,
+    def create_prismatic_joint world, body_a:, body_b:,
                                local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                                local_anchor_bx: 0.0, local_anchor_by: 0.0,
                                local_axis_ax: 1.0, local_axis_ay: 0.0,
@@ -2469,15 +2356,14 @@ module Joints
                                max_motor_force: 0.0, motor_speed: 0.0,
                                enable_spring: false, enable_limit: false, enable_motor: false,
                                collide_connected: false
-      ba = world[:bodies][body_a_id]; bb = world[:bodies][body_b_id]
+      ba = body_a; bb = body_b
       ref = reference_angle ? reference_angle.to_f : (bb[:angle] - ba[:angle])
       ax = local_axis_ax.to_f; ay = local_axis_ay.to_f
       len = Math.sqrt(ax * ax + ay * ay)
       len = 1.0 if len < 1e-10
       ax /= len; ay /= len
-      id = world[:next_joint_id]; world[:next_joint_id] = id + 1
       j = {
-        id: id, type: :prismatic, body_a_id: body_a_id, body_b_id: body_b_id,
+        type: :prismatic, body_a: body_a, body_b: body_b,
         local_anchor_ax: local_anchor_ax.to_f, local_anchor_ay: local_anchor_ay.to_f,
         local_anchor_bx: local_anchor_bx.to_f, local_anchor_by: local_anchor_by.to_f,
         local_frame_a_cos: ax, local_frame_a_sin: ay,
@@ -2500,18 +2386,17 @@ module Joints
     end
 
     # Weld Joint
-    def create_weld_joint world, body_a_id:, body_b_id:,
+    def create_weld_joint world, body_a:, body_b:,
                           local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                           local_anchor_bx: 0.0, local_anchor_by: 0.0,
                           reference_angle: nil,
                           linear_hertz: 0.0, linear_damping_ratio: 0.0,
                           angular_hertz: 0.0, angular_damping_ratio: 0.0,
                           collide_connected: false
-      ba = world[:bodies][body_a_id]; bb = world[:bodies][body_b_id]
+      ba = body_a; bb = body_b
       ref = reference_angle ? reference_angle.to_f : (bb[:angle] - ba[:angle])
-      id = world[:next_joint_id]; world[:next_joint_id] = id + 1
       j = {
-        id: id, type: :weld, body_a_id: body_a_id, body_b_id: body_b_id,
+        type: :weld, body_a: body_a, body_b: body_b,
         local_anchor_ax: local_anchor_ax.to_f, local_anchor_ay: local_anchor_ay.to_f,
         local_anchor_bx: local_anchor_bx.to_f, local_anchor_by: local_anchor_by.to_f,
         local_frame_a_cos: 1.0, local_frame_a_sin: 0.0,
@@ -2531,7 +2416,7 @@ module Joints
     end
 
     # Wheel Joint
-    def create_wheel_joint world, body_a_id:, body_b_id:,
+    def create_wheel_joint world, body_a:, body_b:,
                            local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                            local_anchor_bx: 0.0, local_anchor_by: 0.0,
                            local_axis_ax: 0.0, local_axis_ay: 1.0,
@@ -2544,9 +2429,8 @@ module Joints
       len = Math.sqrt(ax * ax + ay * ay)
       len = 1.0 if len < 1e-10
       ax /= len; ay /= len
-      id = world[:next_joint_id]; world[:next_joint_id] = id + 1
       j = {
-        id: id, type: :wheel, body_a_id: body_a_id, body_b_id: body_b_id,
+        type: :wheel, body_a: body_a, body_b: body_b,
         local_anchor_ax: local_anchor_ax.to_f, local_anchor_ay: local_anchor_ay.to_f,
         local_anchor_bx: local_anchor_bx.to_f, local_anchor_by: local_anchor_by.to_f,
         local_frame_a_cos: ax, local_frame_a_sin: ay,
@@ -2568,7 +2452,7 @@ module Joints
     end
 
     # Motor Joint
-    def create_motor_joint world, body_a_id:, body_b_id:,
+    def create_motor_joint world, body_a:, body_b:,
                            local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                            local_anchor_bx: 0.0, local_anchor_by: 0.0,
                            reference_angle: nil,
@@ -2579,11 +2463,10 @@ module Joints
                            angular_hertz: 1.0, angular_damping_ratio: 1.0,
                            max_spring_force: 0.0, max_spring_torque: 0.0,
                            collide_connected: false
-      ba = world[:bodies][body_a_id]; bb = world[:bodies][body_b_id]
+      ba = body_a; bb = body_b
       ref = reference_angle ? reference_angle.to_f : (bb[:angle] - ba[:angle])
-      id = world[:next_joint_id]; world[:next_joint_id] = id + 1
       j = {
-        id: id, type: :motor, body_a_id: body_a_id, body_b_id: body_b_id,
+        type: :motor, body_a: body_a, body_b: body_b,
         local_anchor_ax: local_anchor_ax.to_f, local_anchor_ay: local_anchor_ay.to_f,
         local_anchor_bx: local_anchor_bx.to_f, local_anchor_by: local_anchor_by.to_f,
         local_frame_a_cos: 1.0, local_frame_a_sin: 0.0,
@@ -2612,44 +2495,41 @@ module Joints
     end
 
     def add_joint world, joint
-      joint[:id] = world[:joints].length
       world[:joints] << joint
-      Islands.merge_body_islands world, joint[:body_a_id], joint[:body_b_id]
+      Islands.merge_body_islands world, joint[:body_a], joint[:body_b]
       joint
     end
 
     def remove_joint world, joint
-      ba = Physics.find_body world, joint[:body_a_id]
-      bb = Physics.find_body world, joint[:body_b_id]
-      iid = -1
-      iid = ba[:island_id] if ba && ba[:type] != :static && ba[:island_id] >= 0
-      iid = bb[:island_id] if iid < 0 && bb && bb[:type] != :static && bb[:island_id] >= 0
-      if iid >= 0
-        island = world[:islands][iid]
-        island[:constraint_remove_count] += 1 if island
-      end
+      ba = joint[:body_a]; bb = joint[:body_b]
+      island = nil
+      island = ba[:island] if ba && ba[:type] != :static && ba[:island]
+      island = bb[:island] if !island && bb && bb[:type] != :static && bb[:island]
+      island[:constraint_remove_count] += 1 if island
 
       joints = world[:joints]
-      idx = joint[:id]
-      last_idx = joints.length - 1
-      if idx != last_idx
-        moved = joints[last_idx]
-        joints[idx] = moved
-        moved[:id] = idx
+      idx = nil
+      i = 0
+      while i < joints.length
+        if joints[i].equal?(joint); idx = i; break; end
+        i += 1
       end
-      joints.pop
+      if idx
+        last_idx = joints.length - 1
+        joints[idx] = joints[last_idx] if idx != last_idx
+        joints.pop
+      end
       joint
     end
 
     # Prepare
     def prepare_joints world, h
       joints = world[:joints]
-      bodies = world[:bodies]
       constraint_softness = world[:joint_softness]
       ji = 0
       while ji < joints.length
         j = joints[ji]; ji += 1
-        ba = bodies[j[:body_a_id]]; bb = bodies[j[:body_b_id]]
+        ba = j[:body_a]; bb = j[:body_b]
         next if ba[:sleeping] && bb[:sleeping]
         ma = ba[:type] == :dynamic ? ba[:inv_mass] : 0.0
         ia = ba[:type] == :dynamic ? ba[:inv_inertia] : 0.0
@@ -2831,11 +2711,10 @@ module Joints
     # Warm Start
     def warm_start_joints world
       joints = world[:joints]
-      bodies = world[:bodies]
       ji = 0
       while ji < joints.length
         j = joints[ji]; ji += 1
-        ba = bodies[j[:body_a_id]]; bb = bodies[j[:body_b_id]]
+        ba = j[:body_a]; bb = j[:body_b]
         next if ba[:sleeping] && bb[:sleeping]
         case j[:type]
         when :distance  then warm_start_distance j, ba, bb
@@ -2998,12 +2877,11 @@ module Joints
     # Solve
     def solve_joints world, h, inv_h, use_bias
       joints = world[:joints]
-      bodies = world[:bodies]
       constraint_softness = world[:joint_softness]
       ji = 0
       while ji < joints.length
         j = joints[ji]; ji += 1
-        ba = bodies[j[:body_a_id]]; bb = bodies[j[:body_b_id]]
+        ba = j[:body_a]; bb = j[:body_b]
         next if ba[:sleeping] && bb[:sleeping]
         case j[:type]
         when :distance  then solve_distance j, ba, bb, h, inv_h, use_bias, constraint_softness
@@ -3607,46 +3485,37 @@ module Islands
 
   class << self
     def create_island world, body
-      id = world[:next_island_id]
-      world[:next_island_id] = id + 1
-      island = { id: id, body_ids: [body[:id]], constraint_remove_count: 0, sleeping: false }
-      world[:islands][id] = island
-      body[:island_id] = id
+      island = { bodies: [body], constraint_remove_count: 0, sleeping: false }
+      world[:islands] << island
+      body[:island] = island
       island
     end
 
-    def merge_islands world, id_a, id_b
-      return id_a if id_a == id_b
-      return id_a if id_b < 0
-      return id_b if id_a < 0
-      ia = world[:islands][id_a]
-      ib = world[:islands][id_b]
-      return id_a unless ia
-      return id_b unless ib
-      if ia[:body_ids].length >= ib[:body_ids].length
+    def merge_islands world, ia, ib
+      return ia if ia.equal?(ib)
+      return ia unless ib
+      return ib unless ia
+      if ia[:bodies].length >= ib[:bodies].length
         big = ia; small = ib
       else
         big = ib; small = ia
       end
-      big_id = big[:id]
-      sids = small[:body_ids]
-      bids = big[:body_ids]
+      sbodies = small[:bodies]
+      bbodies = big[:bodies]
       i = 0
-      while i < sids.length
-        bid = sids[i]; i += 1
-        b = Physics.find_body world, bid
-        b[:island_id] = big_id if b
-        bids << bid
+      while i < sbodies.length
+        b = sbodies[i]; i += 1
+        b[:island] = big
+        bbodies << b
       end
       big[:constraint_remove_count] += small[:constraint_remove_count]
-      # wake sleeping bodies when merging awake + sleeping islands
       if !small[:sleeping] || !big[:sleeping]
         if big[:sleeping]
-          ids = big[:body_ids]
+          bodies_arr = big[:bodies]
           j = 0
-          while j < ids.length
-            sb = Physics.find_body world, ids[j]; j += 1
-            if sb && sb[:sleeping]
+          while j < bodies_arr.length
+            sb = bodies_arr[j]; j += 1
+            if sb[:sleeping]
               sb[:sleeping] = false
               sb[:sleep_time] = 0.0
             end
@@ -3654,11 +3523,11 @@ module Islands
           world[:broadphase][:static_dirty] = true
         end
         if small[:sleeping]
-          ids = small[:body_ids]
+          bodies_arr = small[:bodies]
           j = 0
-          while j < ids.length
-            sb = Physics.find_body world, ids[j]; j += 1
-            if sb && sb[:sleeping]
+          while j < bodies_arr.length
+            sb = bodies_arr[j]; j += 1
+            if sb[:sleeping]
               sb[:sleeping] = false
               sb[:sleep_time] = 0.0
             end
@@ -3667,91 +3536,78 @@ module Islands
         end
         big[:sleeping] = false
       end
-      world[:islands].delete small[:id]
-      big_id
+      world[:islands].delete(small)
+      big
     end
 
-    def merge_body_islands world, body_a_id, body_b_id
-      ba = Physics.find_body world, body_a_id
-      bb = Physics.find_body world, body_b_id
-      # wake sleeping island if other body is awake
-      if ba && bb
-        a_id = ba[:type] != :static ? ba[:island_id] : -1
-        b_id = bb[:type] != :static ? bb[:island_id] : -1
-        if a_id >= 0 && !ba[:sleeping] && b_id >= 0 && bb[:sleeping]
-          wake_island world, b_id
-        elsif b_id >= 0 && !bb[:sleeping] && a_id >= 0 && ba[:sleeping]
-          wake_island world, a_id
-        end
-        a_id = ba[:type] != :static ? ba[:island_id] : -1
-        b_id = bb[:type] != :static ? bb[:island_id] : -1
-      else
-        a_id = ba && ba[:type] != :static ? ba[:island_id] : -1
-        b_id = bb && bb[:type] != :static ? bb[:island_id] : -1
+    def merge_body_islands world, body_a, body_b
+      a_island = body_a[:type] != :static ? body_a[:island] : nil
+      b_island = body_b[:type] != :static ? body_b[:island] : nil
+      if a_island && !body_a[:sleeping] && b_island && body_b[:sleeping]
+        wake_island world, b_island
+        b_island = body_b[:island]
+      elsif b_island && !body_b[:sleeping] && a_island && body_a[:sleeping]
+        wake_island world, a_island
+        a_island = body_a[:island]
       end
-      merge_islands world, a_id, b_id
+      a_island = body_a[:type] != :static ? body_a[:island] : nil
+      b_island = body_b[:type] != :static ? body_b[:island] : nil
+      merge_islands world, a_island, b_island
     end
 
     def link_contact world, pair
-      ba = Physics.find_body world, pair[:body_a_id]
-      bb = Physics.find_body world, pair[:body_b_id]
+      ba = pair[:body_a]; bb = pair[:body_b]
       return unless ba && bb
-      a_id = ba[:type] != :static ? ba[:island_id] : -1
-      b_id = bb[:type] != :static ? bb[:island_id] : -1
-      return if a_id < 0 && b_id < 0
-      # wake sleeping island on any confirmed touching contact
+      a_island = ba[:type] != :static ? ba[:island] : nil
+      b_island = bb[:type] != :static ? bb[:island] : nil
+      return unless a_island || b_island
       if ba[:type] == :dynamic && !ba[:sleeping] && bb[:sleeping]
-        wake_island world, b_id
+        wake_island world, b_island
       elsif bb[:type] == :dynamic && !bb[:sleeping] && ba[:sleeping]
-        wake_island world, a_id
+        wake_island world, a_island
       end
-      a_id = ba[:island_id] if ba[:type] != :static
-      b_id = bb[:island_id] if bb[:type] != :static
-      a_id = -1 if ba[:type] == :static
-      b_id = -1 if bb[:type] == :static
-      merge_islands world, a_id, b_id
+      a_island = ba[:type] != :static ? ba[:island] : nil
+      b_island = bb[:type] != :static ? bb[:island] : nil
+      merge_islands world, a_island, b_island
     end
 
     def unlink_contact world, pair
-      ba = Physics.find_body world, pair[:body_a_id]
-      bb = Physics.find_body world, pair[:body_b_id]
+      ba = pair[:body_a]; bb = pair[:body_b]
       return unless ba && bb
-      iid = -1
-      iid = ba[:island_id] if ba[:type] != :static && ba[:island_id] >= 0
-      iid = bb[:island_id] if iid < 0 && bb[:type] != :static && bb[:island_id] >= 0
-      island = world[:islands][iid]
+      island = nil
+      island = ba[:island] if ba[:type] != :static && ba[:island]
+      island = bb[:island] if !island && bb[:type] != :static && bb[:island]
       island[:constraint_remove_count] += 1 if island
     end
 
-    def try_split_island world, island_id
-      island = world[:islands][island_id]
+    def try_split_island world, island
       return unless island
       return if island[:constraint_remove_count] == 0
       island[:constraint_remove_count] = 0
-      body_ids = island[:body_ids]
-      return if body_ids.length <= 1
+      bodies = island[:bodies]
+      return if bodies.length <= 1
 
-      # build adjacency within this island from current pairs + joints
       body_set = {}
       i = 0
-      while i < body_ids.length
-        body_set[body_ids[i]] = true
+      while i < bodies.length
+        body_set[bodies[i].object_id] = bodies[i]
         i += 1
       end
 
       adjacency = {}
       i = 0
-      while i < body_ids.length
-        adjacency[body_ids[i]] = []
+      while i < bodies.length
+        adjacency[bodies[i].object_id] = []
         i += 1
       end
 
       world[:pairs].each_value do |pair|
         next unless pair[:touching]
-        a = pair[:body_a_id]; b = pair[:body_b_id]
-        if body_set[a] && body_set[b]
-          adjacency[a] << b
-          adjacency[b] << a
+        a = pair[:body_a]; b = pair[:body_b]
+        a_oid = a.object_id; b_oid = b.object_id
+        if body_set[a_oid] && body_set[b_oid]
+          adjacency[a_oid] << b_oid
+          adjacency[b_oid] << a_oid
         end
       end
 
@@ -3759,36 +3615,36 @@ module Islands
       ji = 0
       while ji < joints.length
         jt = joints[ji]; ji += 1
-        a = jt[:body_a_id]; b = jt[:body_b_id]
-        if body_set[a] && body_set[b]
-          adjacency[a] << b
-          adjacency[b] << a
+        a = jt[:body_a]; b = jt[:body_b]
+        a_oid = a.object_id; b_oid = b.object_id
+        if body_set[a_oid] && body_set[b_oid]
+          adjacency[a_oid] << b_oid
+          adjacency[b_oid] << a_oid
         end
       end
 
-      # DFS to find connected components
       visited = {}
       components = []
       stack = []
       i = 0
-      while i < body_ids.length
-        seed = body_ids[i]; i += 1
-        next if visited[seed]
-        component = [seed]
+      while i < bodies.length
+        seed_oid = bodies[i].object_id; i += 1
+        next if visited[seed_oid]
+        component = [body_set[seed_oid]]
         stack.clear
-        stack << seed
-        visited[seed] = true
+        stack << seed_oid
+        visited[seed_oid] = true
         while stack.length > 0
-          bid = stack.pop
-          neighbors = adjacency[bid]
+          oid = stack.pop
+          neighbors = adjacency[oid]
           if neighbors
             ni = 0
             while ni < neighbors.length
-              nid = neighbors[ni]; ni += 1
-              unless visited[nid]
-                visited[nid] = true
-                stack << nid
-                component << nid
+              noid = neighbors[ni]; ni += 1
+              unless visited[noid]
+                visited[noid] = true
+                stack << noid
+                component << body_set[noid]
               end
             end
           end
@@ -3798,52 +3654,46 @@ module Islands
 
       return if components.length <= 1
 
-      # first component keeps the original island
-      island[:body_ids] = components[0]
+      island[:bodies] = components[0]
       ci = 1
       while ci < components.length
         comp = components[ci]; ci += 1
-        new_id = world[:next_island_id]
-        world[:next_island_id] = new_id + 1
-        new_island = { id: new_id, body_ids: comp, constraint_remove_count: 0, sleeping: island[:sleeping] }
-        world[:islands][new_id] = new_island
+        new_island = { bodies: comp, constraint_remove_count: 0, sleeping: island[:sleeping] }
+        world[:islands] << new_island
         bi = 0
         while bi < comp.length
-          b = Physics.find_body world, comp[bi]; bi += 1
-          b[:island_id] = new_id if b
+          comp[bi][:island] = new_island
+          bi += 1
         end
       end
     end
 
     def tick world, dt
       islands = world[:islands]
-      dead_ids = nil
-      split_ids = nil
+      split_list = nil
 
-      # phase 1: collect awake islands that need splitting (Box2D: split before sleep)
-      islands.each_value do |island|
+      islands.each do |island|
         next if island[:sleeping]
         if island[:constraint_remove_count] > 0
-          split_ids ||= []
-          split_ids << island[:id]
+          split_list ||= []
+          split_list << island
         end
       end
 
-      # phase 2: split (resets constraint_remove_count; may add new awake islands)
-      if split_ids
+      if split_list
         i = 0
-        while i < split_ids.length
-          try_split_island world, split_ids[i]; i += 1
+        while i < split_list.length
+          try_split_island world, split_list[i]; i += 1
         end
       end
 
-      # phase 3: evaluate sleep on all awake islands (including newly split ones)
-      islands.each_value do |island|
+      dead = nil
+      islands.each do |island|
         next if island[:sleeping]
-        body_ids = island[:body_ids]
-        if body_ids.length == 0
-          dead_ids ||= []
-          dead_ids << island[:id]
+        bodies_arr = island[:bodies]
+        if bodies_arr.length == 0
+          dead ||= []
+          dead << island
           next
         end
 
@@ -3851,9 +3701,8 @@ module Islands
         min_sleep = 1e18
         all_awake_sleeping = true
         i = 0
-        while i < body_ids.length
-          b = Physics.find_body world, body_ids[i]; i += 1
-          next unless b
+        while i < bodies_arr.length
+          b = bodies_arr[i]; i += 1
           has_kinematic = true if b[:type] == :kinematic
           next unless b[:type] == :dynamic
           next if b[:sleeping]
@@ -3877,16 +3726,16 @@ module Islands
 
         island[:sleeping] = true
         i = 0
-        while i < body_ids.length
-          b = Physics.find_body world, body_ids[i]; i += 1
-          sleep_body world, b if b && b[:type] == :dynamic && !b[:sleeping]
+        while i < bodies_arr.length
+          b = bodies_arr[i]; i += 1
+          sleep_body world, b if b[:type] == :dynamic && !b[:sleeping]
         end
       end
 
-      if dead_ids
+      if dead
         i = 0
-        while i < dead_ids.length
-          islands.delete dead_ids[i]; i += 1
+        while i < dead.length
+          islands.delete dead[i]; i += 1
         end
       end
     end
@@ -3900,18 +3749,17 @@ module Islands
 
     def wake_body world, b
       return unless b[:sleeping]
-      wake_island world, b[:island_id]
+      wake_island world, b[:island]
     end
 
-    def wake_island world, island_id
-      island = world[:islands][island_id]
+    def wake_island world, island
       return unless island && island[:sleeping]
       island[:sleeping] = false
-      body_ids = island[:body_ids]
+      bodies_arr = island[:bodies]
       i = 0
-      while i < body_ids.length
-        b = Physics.find_body world, body_ids[i]; i += 1
-        if b && b[:sleeping]
+      while i < bodies_arr.length
+        b = bodies_arr[i]; i += 1
+        if b[:sleeping]
           b[:sleeping] = false
           b[:sleep_time] = 0.0
         end
@@ -3927,7 +3775,7 @@ module DebugDraw
       world[:pairs].each_value do |pair|
         m = pair[:manifold]
         nx = m[:normal_x]; ny = m[:normal_y]
-        ba = Physics.find_body world, pair[:body_a_id]
+        ba = pair[:body_a]
         m[:points].each do |p|
           wx = ba[:x] + p[:anchor_ax]; wy = ba[:y] + p[:anchor_ay]
           outputs.sprites << { x: wx - 3, y: wy - 3, w: 6, h: 6, path: "sprites/circle/white.png" }
@@ -3941,7 +3789,7 @@ module DebugDraw
       i = 0
       while i < shapes.length
         s = shapes[i]; i += 1
-        b = Physics.find_body world, s[:body_id]
+        b = s[:body]
         next if b[:sleeping]
         Physics.compute_aabb s, b
         w = s[:aabb_x1] - s[:aabb_x0]; h = s[:aabb_y1] - s[:aabb_y0]

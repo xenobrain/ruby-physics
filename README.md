@@ -36,12 +36,12 @@ def boot args
   # static ground
   ground = Physics.create_body w, x: 640, y: 10, type: :static
   Physics.add_body w, ground
-  Physics.add_shape w, Physics.create_box(w, body_id: ground[:id], w: 1280, h: 20, friction: 0.8)
+  Physics.add_shape w, Physics.create_box(body: ground, w: 1280, h: 20, friction: 0.8)
 
   # dynamic body
   ball = Physics.create_body w, x: 640, y: 400, type: :dynamic
   Physics.add_body w, ball
-  Physics.add_shape w, Physics.create_circle(w, body_id: ball[:id], radius: 20, density: 1.0)
+  Physics.add_shape w, Physics.create_circle(body: ball, radius: 20, density: 1.0)
 
   args.state.world = w
   args.state.ball = ball
@@ -140,7 +140,7 @@ Physics.remove_body w, b
 
 ### Shapes
 
-All shapes are attached to a body via `body_id`. Dynamic bodies automatically compute mass and inertia from shape density and geometry when the shape is added to the world. All shape creation methods accept optional `layer:` and `mask:` parameters for [collision filtering](#collision-filtering).
+All shapes are attached to a body via `body:`. Dynamic bodies automatically compute mass and inertia from shape density and geometry when the shape is added to the world. All shape creation methods accept optional `layer:` and `mask:` parameters for [collision filtering](#collision-filtering).
 
 Shapes are not part of the simulation until added with `Physics.add_shape`. Adding a shape also transforms it to world space automatically. Remove a shape individually with `remove_shape`, which subtracts its mass contribution from the parent body:
 
@@ -149,8 +149,8 @@ Physics.remove_shape w, s
 ```
 
 ```ruby
-s = Physics.create_circle w,
-  body_id: b[:id],
+s = Physics.create_circle
+  body: b,
   radius: 20.0,
   offset_x: 0.0, offset_y: 0.0,  # local offset from body center
   density: 1.0, friction: 0.6, restitution: 0.0,
@@ -158,27 +158,27 @@ s = Physics.create_circle w,
 Physics.add_shape w, s
 
 s = Physics.create_box w,
-  body_id: b[:id],
+  body: b,
   w: 40, h: 20,
   density: 1.0, friction: 0.6, restitution: 0.0,
   layer: Physics::LAYERS[:terrain]  # omit mask: to collide with everything
 Physics.add_shape w, s
 
 s = Physics.create_polygon w,
-  body_id: b[:id],
+  body: b,
   vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
   density: 1.0, friction: 0.6, restitution: 0.0
 Physics.add_shape w, s
 
 s = Physics.create_capsule w,
-  body_id: b[:id],
+  body: b,
   x1: -20, y1: 0, x2: 20, y2: 0,  # local endpoints
   radius: 8.0,
   density: 1.0, friction: 0.6, restitution: 0.0
 Physics.add_shape w, s
 
 s = Physics.create_segment w,
-  body_id: b[:id],
+  body: b,
   x1: -100, y1: 0, x2: 100, y2: 0,  # local endpoints (zero-thickness line)
   friction: 0.6, restitution: 0.0
 Physics.add_shape w, s
@@ -189,20 +189,18 @@ Both `layer:` and `mask:` are optional — omit either to collide with everythin
 ### Forces and Impulses
 
 ```ruby
-Physics.apply_force w, b[:id], fx, fy
-Physics.apply_impulse w, b[:id], ix, iy           # at center of mass
-Physics.apply_impulse w, b[:id], ix, iy, px, py   # at world point
-Physics.apply_torque w, b[:id], torque
-Physics.set_velocity w, b[:id], vx, vy
-Physics.set_mass w, b[:id], mass
-Physics.set_inertia w, b[:id], inertia
+Physics.apply_force w, b, fx, fy
+Physics.apply_impulse w, b, ix, iy           # at center of mass
+Physics.apply_impulse w, b, ix, iy, px, py   # at world point
+Physics.apply_torque w, b, torque
+Physics.set_velocity w, b, vx, vy
+Physics.set_mass w, b, mass
+Physics.set_inertia w, b, inertia
 ```
 
 ### Queries
 
 ```ruby
-b = Physics.find_body w, body_id
-s = Physics.find_shape w, shape_id
 b = Physics.body_at_point w, px, py  # returns first body at world point, or nil
 ```
 
@@ -214,7 +212,7 @@ Shapes have `layer` and `mask` bitmask integers that control which shapes can co
 (shape_a[:layer] & shape_b[:mask]) != 0 && (shape_b[:layer] & shape_a[:mask]) != 0
 ```
 
-Both default to `0xFFFF` (collide with everything). Use `Physics::LAYERS` for convenient named layers — first access to any symbol auto-assigns the next bit:
+Both default to `0xFFFF` (collide with everything). `Physics::LAYERS[:all]` is preset to `0xFFFF`. Use `Physics::LAYERS` for convenient named layers — first access to any symbol auto-assigns the next bit:
 
 ```ruby
 # Define layers (auto-assigned on first access)
@@ -222,19 +220,20 @@ Physics::LAYERS[:terrain]      # => 0x0001
 Physics::LAYERS[:player]       # => 0x0002
 Physics::LAYERS[:enemy]        # => 0x0004
 Physics::LAYERS[:projectile]   # => 0x0008
+Physics::LAYERS[:all]          # => 0xFFFF (preset)
 
 # Build masks by OR-ing layers together
-COLLIDES_WITH_ALL    = Physics::LAYERS[:terrain] | Physics::LAYERS[:player] | Physics::LAYERS[:enemy] | Physics::LAYERS[:projectile]
+COLLIDES_WITH_ALL    = Physics::LAYERS[:all]
 COLLIDES_WITH_GROUND = Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
 
 # Player collides with terrain and enemies, but not projectiles
-s = Physics.create_circle w, body_id: b[:id], radius: 10,
+s = Physics.create_circle body: b, radius: 10,
   layer: Physics::LAYERS[:player],
   mask: COLLIDES_WITH_GROUND
 Physics.add_shape w, s
 
 # Projectile collides with terrain and enemies only
-s = Physics.create_circle w, body_id: b[:id], radius: 4,
+s = Physics.create_circle body: b, radius: 4,
   layer: Physics::LAYERS[:projectile],
   mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
 Physics.add_shape w, s
@@ -257,7 +256,7 @@ Physics::Joints.remove_joint w, j
 
 ```ruby
 j = Physics::Joints.create_distance_joint w,
-  body_a_id: ba[:id], body_b_id: bb[:id],
+  body_a: ba, body_b: bb,
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
   length: nil,                    # auto-computed from initial positions if nil
@@ -267,7 +266,7 @@ j = Physics::Joints.create_distance_joint w,
 Physics::Joints.add_joint w, j
 
 j = Physics::Joints.create_revolute_joint w,
-  body_a_id: ba[:id], body_b_id: bb[:id],
+  body_a: ba, body_b: bb,
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
   enable_spring: false, hertz: 0.0, damping_ratio: 0.0, target_angle: 0.0,
@@ -276,7 +275,7 @@ j = Physics::Joints.create_revolute_joint w,
 Physics::Joints.add_joint w, j
 
 j = Physics::Joints.create_prismatic_joint w,
-  body_a_id: ba[:id], body_b_id: bb[:id],
+  body_a: ba, body_b: bb,
   local_axis_ax: 1.0, local_axis_ay: 0.0,  # slide axis in body A's local space
   enable_spring: false, hertz: 0.0, damping_ratio: 0.0,
   enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
@@ -284,7 +283,7 @@ j = Physics::Joints.create_prismatic_joint w,
 Physics::Joints.add_joint w, j
 
 j = Physics::Joints.create_weld_joint w,
-  body_a_id: ba[:id], body_b_id: bb[:id],
+  body_a: ba, body_b: bb,
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
   linear_hertz: 0.0, linear_damping_ratio: 0.0,    # 0 = rigid
@@ -292,7 +291,7 @@ j = Physics::Joints.create_weld_joint w,
 Physics::Joints.add_joint w, j
 
 j = Physics::Joints.create_wheel_joint w,
-  body_a_id: ba[:id], body_b_id: bb[:id],
+  body_a: ba, body_b: bb,
   local_axis_ax: 0.0, local_axis_ay: 1.0,  # suspension axis
   enable_spring: true, hertz: 1.0, damping_ratio: 0.7,
   enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
@@ -300,7 +299,7 @@ j = Physics::Joints.create_wheel_joint w,
 Physics::Joints.add_joint w, j
 
 j = Physics::Joints.create_motor_joint w,
-  body_a_id: ba[:id], body_b_id: bb[:id],
+  body_a: ba, body_b: bb,
   linear_hertz: 1.0, linear_damping_ratio: 1.0,
   angular_hertz: 1.0, angular_damping_ratio: 1.0,
   max_spring_force: 0.0, max_spring_torque: 0.0
@@ -373,7 +372,7 @@ end
 - Callbacks fire inline during `Physics.tick` (inside `find_contacts`). Do not add/remove bodies or shapes inside a callback.
 - World callbacks fire first, then per-body callbacks for each body involved.
 - For per-body callbacks, each body sees itself as `body_a` (first argument) and the other body as `body_b`.
-- For world callbacks, `body_a` owns the lower-ID shape; ordering is deterministic but arbitrary.
+- For world callbacks, ordering is deterministic but arbitrary.
 - Multiple shapes between the same two bodies produce separate callbacks.
 - Sleeping contacts: no `persist` or `end` events fire while both bodies sleep.
 - Unregister: `w[:on_contact_begin] = nil` (world) or `body[:on_contact_begin] = nil` (per-body).

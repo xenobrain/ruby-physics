@@ -23,34 +23,31 @@ JOINT_DEMOS = %w[Pendulum Chain Bridge Prismatic Wheel Weld Motor]
 module Game
   class << self
     def init
-      @dragon_ids = {}
-      @enemy_map = {}
       @effects = []
     end
 
-    def register_dragon body_id
-      @dragon_ids[body_id] = true
-    end
+    def on_contact body_a, body_b, pair
+      ea = body_a[:entity]
+      eb = body_b[:entity]
+      enemy = nil
+      other = nil
+      if ea && ea[:alive] && ea[:kind] == :enemy
+        enemy = ea; other = body_b
+      elsif eb && eb[:alive] && eb[:kind] == :enemy
+        enemy = eb; other = body_a
+      end
+      return unless enemy
 
-    def register_enemy body_id, entry
-      @enemy_map[body_id] = entry
-    end
-
-    # Per-body callback: registered on each enemy body individually.
-    # The enemy body is always the first argument (self), the other body second.
-    def on_enemy_hit self_body, other_body, pair
-      entry = @enemy_map[self_body[:id]]
-      return unless entry
-
-      dragon_hit = @dragon_ids[other_body[:id]]
+      dragon_hit = other[:entity_kind] == :dragon
 
       nx = pair[:manifold][:normal_x]
       ny = pair[:manifold][:normal_y]
-      dvx = other_body[:vx] - self_body[:vx]
-      dvy = other_body[:vy] - self_body[:vy]
+      enemy_body = (enemy == ea ? body_a : body_b)
+      dvx = other[:vx] - enemy_body[:vx]
+      dvy = other[:vy] - enemy_body[:vy]
       impact = (dvx * nx + dvy * ny).abs
 
-      kill_enemy(entry) if dragon_hit || impact > 200
+      kill_enemy(enemy) if dragon_hit || impact > 200
     end
 
     def kill_enemy e
@@ -163,6 +160,7 @@ def setup_level args
 
   args.state.world = w
   Game.init
+  Physics.on_contact_begin w, Game, :on_contact
   args.state.dragons_remaining = 5
   args.state.active_dragon = nil
   args.state.dragging = false
@@ -177,15 +175,15 @@ def setup_level args
 
   g1 = Physics.create_body w, x: 450, y: GROUND_Y - 15, type: :static
   Physics.add_body w, g1
-  _s = Physics.create_box w, body_id: g1[:id], w: 900, h: 30, friction: 0.8, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
+  _s = Physics.create_box body: g1, w: 900, h: 30, friction: 0.8, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   Physics.add_shape w, _s
   g2 = Physics.create_body w, x: 1100, y: GROUND_Y - 15, type: :static
   Physics.add_body w, g2
-  _s = Physics.create_box w, body_id: g2[:id], w: 900, h: 30, friction: 0.8, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
+  _s = Physics.create_box body: g2, w: 900, h: 30, friction: 0.8, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   Physics.add_shape w, _s
   lw = Physics.create_body w, x: -5, y: 400, type: :static
   Physics.add_body w, lw
-  _s = Physics.create_box w, body_id: lw[:id], w: 10, h: 800, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
+  _s = Physics.create_box body: lw, w: 10, h: 800, layer: Physics::LAYERS[:terrain], mask: Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   Physics.add_shape w, _s
 
   build_castle w, args
@@ -231,24 +229,23 @@ end
 def add_block w, args, x, y
   b = Physics.create_body w, x: x, y: y, type: :dynamic
   Physics.add_body w, b
-  s = Physics.create_box w, body_id: b[:id], w: BLOCK_SIZE, h: BLOCK_SIZE, density: 0.5, friction: 0.6, restitution: 0.1,
+  s = Physics.create_box body: b, w: BLOCK_SIZE, h: BLOCK_SIZE, density: 0.5, friction: 0.6, restitution: 0.1,
                        layer: Physics::LAYERS[:block], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   Physics.add_shape w, s
   Physics::Islands.sleep_body w, b
-  args.state.block_shapes << { body: b, shape: s, color: BLOCK_COLORS[s[:id] % BLOCK_COLORS.length] }
+  args.state.block_shapes << { body: b, shape: s, color: BLOCK_COLORS[args.state.block_shapes.length % BLOCK_COLORS.length] }
 end
 
 def add_enemy w, args, x, y
   b = Physics.create_body w, x: x, y: y, type: :dynamic
   Physics.add_body w, b
-  s = Physics.create_box w, body_id: b[:id], w: ENEMY_W, h: ENEMY_H, density: 0.3, friction: 0.4, restitution: 0.05,
+  s = Physics.create_box body: b, w: ENEMY_W, h: ENEMY_H, density: 0.3, friction: 0.4, restitution: 0.05,
                        layer: Physics::LAYERS[:enemy], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:dragon] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   Physics.add_shape w, s
-  Physics.on_body_contact_begin b, Game, :on_enemy_hit
   Physics::Islands.sleep_body w, b
-  entry = { body: b, shape: s, color: ENEMY_COLORS[b[:id] % ENEMY_COLORS.length], alive: true }
+  entry = { body: b, shape: s, color: ENEMY_COLORS[args.state.enemy_bodies.length % ENEMY_COLORS.length], alive: true, kind: :enemy }
+  b[:entity] = entry
   args.state.enemy_bodies << entry
-  Game.register_enemy b[:id], entry
 end
 
 def load_dragon w, args
@@ -256,11 +253,11 @@ def load_dragon w, args
   b = Physics.create_body w, x: SLING_X, y: SLING_Y, type: :dynamic
   Physics.add_body w, b
   b[:gravity_scale] = 0.0
-  s = Physics.create_circle w, body_id: b[:id], radius: DRAGON_RADIUS, density: 1.5, friction: 0.5, restitution: 0.3,
+  s = Physics.create_circle body: b, radius: DRAGON_RADIUS, density: 1.5, friction: 0.5, restitution: 0.3,
                           layer: Physics::LAYERS[:dragon], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:block] | Physics::LAYERS[:enemy]
   Physics.add_shape w, s
+  b[:entity_kind] = :dragon
   args.state.active_dragon = { body: b, shape: s }
-  Game.register_dragon b[:id]
   args.state.dragging = false
   args.state.game_state = :aiming
 end
@@ -334,9 +331,14 @@ def tick_game args
   Physics.tick w
 
   args.state.enemy_bodies.each do |e|
-    next unless e[:alive]
-    b = e[:body]
-    Game.kill_enemy e if b[:y] < GROUND_Y - 20 || b[:angle].abs > 1.2
+    if e[:alive]
+      b = e[:body]
+      Game.kill_enemy e if b[:y] < GROUND_Y - 20 || b[:angle].abs > 1.2
+    end
+    if !e[:alive] && !e[:removed]
+      e[:removed] = true
+      Physics.remove_body w, e[:body]
+    end
   end
 
   # camera
@@ -390,6 +392,7 @@ def setup_sandbox args
   w = Physics.create_world
   args.state.world = w
   args.state.spawn_idx = 0
+  args.state.color_idx = 0
   args.state.debug_draw = false
   args.state.active_dragon = nil
   args.state.dragon_bodies = []
@@ -398,54 +401,63 @@ def setup_sandbox args
 
   floor = Physics.create_body w, x: 640, y: -10, type: :static
   Physics.add_body w, floor
-  _s = Physics.create_box w, body_id: floor[:id], w: 1200, h: 40, friction: 0.8
+  _s = Physics.create_box body: floor, w: 1200, h: 40, friction: 0.8
   Physics.add_shape w, _s
   lw = Physics.create_body w, x: -10, y: 360, type: :static
   Physics.add_body w, lw
-  _s = Physics.create_box w, body_id: lw[:id], w: 40, h: 800, friction: 0.5
+  _s = Physics.create_box body: lw, w: 40, h: 800, friction: 0.5
   Physics.add_shape w, _s
   rw = Physics.create_body w, x: 1290, y: 360, type: :static
   Physics.add_body w, rw
-  _s = Physics.create_box w, body_id: rw[:id], w: 40, h: 800, friction: 0.5
+  _s = Physics.create_box body: rw, w: 40, h: 800, friction: 0.5
   Physics.add_shape w, _s
   ramp = Physics.create_body w, x: 400, y: 200, type: :static
   Physics.add_body w, ramp
-  _s = Physics.create_segment w, body_id: ramp[:id], x1: -150, y1: 45, x2: 150, y2: -45
+  _s = Physics.create_segment body: ramp, x1: -150, y1: 45, x2: 150, y2: -45
   Physics.add_shape w, _s
   ramp2 = Physics.create_body w, x: 880, y: 120, type: :static
   Physics.add_body w, ramp2
-  _s = Physics.create_segment w, body_id: ramp2[:id], x1: -150, y1: -45, x2: 150, y2: 45
+  _s = Physics.create_segment body: ramp2, x1: -150, y1: -45, x2: 150, y2: 45
   Physics.add_shape w, _s
 
-  5.times { sb_circle w, 200 + rand(880), 400 + rand(250) }
-  5.times { sb_box w, 200 + rand(880), 400 + rand(250) }
-  5.times { sb_capsule w, 200 + rand(880), 400 + rand(250) }
-  5.times { sb_polygon w, 200 + rand(880), 400 + rand(250) }
+  5.times { sb_circle w, args, 200 + rand(880), 400 + rand(250) }
+  5.times { sb_box w, args, 200 + rand(880), 400 + rand(250) }
+  5.times { sb_capsule w, args, 200 + rand(880), 400 + rand(250) }
+  5.times { sb_polygon w, args, 200 + rand(880), 400 + rand(250) }
 end
 
-def sb_box w, x, y
+def sb_color args
+  c = SANDBOX_COLORS[args.state.color_idx % SANDBOX_COLORS.length]
+  args.state.color_idx += 1
+  c
+end
+
+def sb_box w, args, x, y
   b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
   Physics.add_body w, b
-  _s = Physics.create_box w, body_id: b[:id], w: 14 + rand(16), h: 14 + rand(16), density: 0.8, friction: 0.6, restitution: 0.2
+  _s = Physics.create_box body: b, w: 14 + rand(16), h: 14 + rand(16), density: 0.8, friction: 0.6, restitution: 0.2
+  _s[:color] = sb_color(args)
   Physics.add_shape w, _s
 end
 
-def sb_circle w, x, y
+def sb_circle w, args, x, y
   b = Physics.create_body w, x: x, y: y, type: :dynamic
   Physics.add_body w, b
-  _s = Physics.create_circle w, body_id: b[:id], radius: 8 + rand(14), density: 0.5, friction: 0.6, restitution: 0.3
+  _s = Physics.create_circle body: b, radius: 8 + rand(14), density: 0.5, friction: 0.6, restitution: 0.3
+  _s[:color] = sb_color(args)
   Physics.add_shape w, _s
 end
 
-def sb_capsule w, x, y
+def sb_capsule w, args, x, y
   hl = 8 + rand(12); r = 4 + rand(6)
   b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
   Physics.add_body w, b
-  _s = Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
+  _s = Physics.create_capsule body: b, x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
+  _s[:color] = sb_color(args)
   Physics.add_shape w, _s
 end
 
-def sb_polygon w, x, y
+def sb_polygon w, args, x, y
   n = 5 + rand(4)
   verts = []
   n.times do |i|
@@ -455,7 +467,8 @@ def sb_polygon w, x, y
   end
   b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
   Physics.add_body w, b
-  _s = Physics.create_polygon w, body_id: b[:id], vertices: verts, density: 0.7, friction: 0.6, restitution: 0.2
+  _s = Physics.create_polygon body: b, vertices: verts, density: 0.7, friction: 0.6, restitution: 0.2
+  _s[:color] = sb_color(args)
   Physics.add_shape w, _s
 end
 
@@ -474,10 +487,10 @@ def tick_sandbox args
       Physics.remove_body w, b if b && b[:type] == :dynamic
     else
       case mode
-      when :box then sb_box w, mx, my
-      when :circle then sb_circle w, mx, my
-      when :capsule then sb_capsule w, mx, my
-      when :polygon then sb_polygon w, mx, my
+      when :box then sb_box w, args, mx, my
+      when :circle then sb_circle w, args, mx, my
+      when :capsule then sb_capsule w, args, mx, my
+      when :polygon then sb_polygon w, args, mx, my
       end
     end
   end
@@ -485,9 +498,9 @@ def tick_sandbox args
 
   shapes = w[:shapes]; i = 0
   while i < shapes.length
-    s = shapes[i]; b = Physics.find_body w, s[:body_id]; i += 1
+    s = shapes[i]; b = s[:body]; i += 1
     next if b[:x] != b[:x]
-    color = SANDBOX_COLORS[s[:id] % SANDBOX_COLORS.length]; ad = b[:angle] * DEG
+    color = s[:color] || 'white'; ad = b[:angle] * DEG
     if s[:type] == :circle
       next if b[:type] == :static; r = s[:radius]; d = r * 2
       args.outputs.sprites << { x: b[:x] - r + s[:offset_x], y: b[:y] - r + s[:offset_y], w: d, h: d, path: "sprites/circle/#{color}.png", angle: ad }
@@ -502,20 +515,22 @@ def tick_sandbox args
           x0 = lx if lx < x0; x1 = lx if lx > x1; y0 = ly if ly < y0; y1 = ly if ly > y1; vi += 1; end
         args.outputs.sprites << { x: b[:x] - (x1-x0)*0.5, y: b[:y] - (y1-y0)*0.5, w: x1-x0, h: y1-y0, path: "sprites/square/#{color}.png", angle: ad }
       else
-        wv = s[:world_vertices]; c = s[:count]
-        x0 = 1e18; x1 = -1e18; y0 = 1e18; y1 = -1e18; cx = 0.0; cy = 0.0; vi = 0
-        while vi < c; vi2 = vi * 2; wx = wv[vi2]; wy = wv[vi2 + 1]
-          cx += wx; cy += wy
-          x0 = wx if wx < x0; x1 = wx if wx > x1; y0 = wy if wy < y0; y1 = wy if wy > y1; vi += 1; end
-        cx /= c; cy /= c; bw = x1 - x0; bh = y1 - y0
-        uw = 80.0 / (bw == 0 ? 1.0 : bw); uh = 80.0 / (bh == 0 ? 1.0 : bh)
+        wv = s[:world_vertices]; lv = s[:vertices]; c = s[:count]
+        lx0 = 1e18; lx1 = -1e18; ly0 = 1e18; ly1 = -1e18; vi = 0
+        while vi < c; vi2 = vi * 2; vx = lv[vi2]; vy = lv[vi2 + 1]
+          lx0 = vx if vx < lx0; lx1 = vx if vx > lx1; ly0 = vy if vy < ly0; ly1 = vy if vy > ly1; vi += 1; end
+        lbw = lx1 - lx0; lbh = ly1 - ly0
+        uw = 80.0 / (lbw == 0 ? 1.0 : lbw); uh = 80.0 / (lbh == 0 ? 1.0 : lbh)
+        wcx = 0.0; wcy = 0.0; vi = 0
+        while vi < c; vi2 = vi * 2; wcx += wv[vi2]; wcy += wv[vi2 + 1]; vi += 1; end
+        wcx /= c; wcy /= c
         tris = []; vi = 0
         while vi < c
           ni = vi + 1 < c ? vi + 1 : 0; vi2 = vi * 2; ni2 = ni * 2
-          tris << { x: cx, y: cy, x2: wv[vi2], y2: wv[vi2 + 1], x3: wv[ni2], y3: wv[ni2 + 1],
-                    source_x: (cx - x0) * uw, source_y: (cy - y0) * uh,
-                    source_x2: (wv[vi2] - x0) * uw, source_y2: (wv[vi2 + 1] - y0) * uh,
-                    source_x3: (wv[ni2] - x0) * uw, source_y3: (wv[ni2 + 1] - y0) * uh,
+          tris << { x: wcx, y: wcy, x2: wv[vi2], y2: wv[vi2 + 1], x3: wv[ni2], y3: wv[ni2 + 1],
+                    source_x: -lx0 * uw, source_y: -ly0 * uh,
+                    source_x2: (lv[vi2] - lx0) * uw, source_y2: (lv[vi2 + 1] - ly0) * uh,
+                    source_x3: (lv[ni2] - lx0) * uw, source_y3: (lv[ni2 + 1] - ly0) * uh,
                     path: "sprites/square/#{color}.png" }
           vi += 1
         end
@@ -564,7 +579,7 @@ module CallbackDemo
 
     def on_contact_persist body_a, body_b, pair
       @persist_count += 1
-      key = (pair[:shape_a_id] << 16) | pair[:shape_b_id]
+      key = Physics.pair_key(pair[:shape_a], pair[:shape_b])
       @persist_lines[key] = { ax: body_a[:x], ay: body_a[:y], bx: body_b[:x], by: body_b[:y], timer: 2 }
     end
 
@@ -624,6 +639,7 @@ def setup_callback_demo args
   w = Physics.create_world
   args.state.world = w
   args.state.spawn_idx = 0
+  args.state.color_idx = 0
   args.state.debug_draw = false
 
   CallbackDemo.init
@@ -633,37 +649,37 @@ def setup_callback_demo args
 
   floor = Physics.create_body w, x: 640, y: -10, type: :static
   Physics.add_body w, floor
-  _s = Physics.create_box w, body_id: floor[:id], w: 1200, h: 40, friction: 0.8
+  _s = Physics.create_box body: floor, w: 1200, h: 40, friction: 0.8
   Physics.add_shape w, _s
   lw = Physics.create_body w, x: -10, y: 360, type: :static
   Physics.add_body w, lw
-  _s = Physics.create_box w, body_id: lw[:id], w: 40, h: 800, friction: 0.5
+  _s = Physics.create_box body: lw, w: 40, h: 800, friction: 0.5
   Physics.add_shape w, _s
   rw = Physics.create_body w, x: 1290, y: 360, type: :static
   Physics.add_body w, rw
-  _s = Physics.create_box w, body_id: rw[:id], w: 40, h: 800, friction: 0.5
+  _s = Physics.create_box body: rw, w: 40, h: 800, friction: 0.5
   Physics.add_shape w, _s
 
   ramp = Physics.create_body w, x: 400, y: 200, type: :static
   Physics.add_body w, ramp
-  _s = Physics.create_segment w, body_id: ramp[:id], x1: -150, y1: 45, x2: 150, y2: -45
+  _s = Physics.create_segment body: ramp, x1: -150, y1: 45, x2: 150, y2: -45
   Physics.add_shape w, _s
   ramp2 = Physics.create_body w, x: 880, y: 120, type: :static
   Physics.add_body w, ramp2
-  _s = Physics.create_segment w, body_id: ramp2[:id], x1: -150, y1: -45, x2: 150, y2: 45
+  _s = Physics.create_segment body: ramp2, x1: -150, y1: -45, x2: 150, y2: 45
   Physics.add_shape w, _s
 
   # Tracked body: uses per-body callback to count its own collisions
   tracked = Physics.create_body w, x: 640, y: 500, type: :dynamic
   Physics.add_body w, tracked
-  _s = Physics.create_circle w, body_id: tracked[:id], radius: 20, density: 1.0, friction: 0.6, restitution: 0.5
+  _s = Physics.create_circle body: tracked, radius: 20, density: 1.0, friction: 0.6, restitution: 0.5
   Physics.add_shape w, _s
   Physics.on_body_contact_begin tracked, CallbackDemo, :on_tracked_hit
   CallbackDemo.instance_variable_set(:@tracked_body, tracked)
 
-  5.times { sb_circle w, 200 + rand(880), 400 + rand(250) }
-  5.times { sb_box w, 200 + rand(880), 400 + rand(250) }
-  3.times { sb_capsule w, 200 + rand(880), 400 + rand(250) }
+  5.times { sb_circle w, args, 200 + rand(880), 400 + rand(250) }
+  5.times { sb_box w, args, 200 + rand(880), 400 + rand(250) }
+  3.times { sb_capsule w, args, 200 + rand(880), 400 + rand(250) }
 end
 
 def tick_callback_demo args
@@ -678,10 +694,10 @@ def tick_callback_demo args
   if args.inputs.mouse.click
     mx = args.inputs.mouse.x; my = args.inputs.mouse.y
     case mode
-    when :box then sb_box w, mx, my
-    when :circle then sb_circle w, mx, my
-    when :capsule then sb_capsule w, mx, my
-    when :polygon then sb_polygon w, mx, my
+    when :box then sb_box w, args, mx, my
+    when :circle then sb_circle w, args, mx, my
+    when :capsule then sb_capsule w, args, mx, my
+    when :polygon then sb_polygon w, args, mx, my
     end
   end
 
@@ -692,9 +708,9 @@ def tick_callback_demo args
 
   shapes = w[:shapes]; i = 0
   while i < shapes.length
-    s = shapes[i]; b = Physics.find_body w, s[:body_id]; i += 1
+    s = shapes[i]; b = s[:body]; i += 1
     next if b[:x] != b[:x]
-    color = SANDBOX_COLORS[s[:id] % SANDBOX_COLORS.length]; ad = b[:angle] * DEG
+    color = s[:color] || 'white'; ad = b[:angle] * DEG
     if s[:type] == :circle
       next if b[:type] == :static; r = s[:radius]; d = r * 2
       args.outputs.sprites << { x: b[:x] - r + s[:offset_x], y: b[:y] - r + s[:offset_y], w: d, h: d, path: "sprites/circle/#{color}.png", angle: ad }
@@ -709,20 +725,22 @@ def tick_callback_demo args
           x0 = lx if lx < x0; x1 = lx if lx > x1; y0 = ly if ly < y0; y1 = ly if ly > y1; vi += 1; end
         args.outputs.sprites << { x: b[:x] - (x1-x0)*0.5, y: b[:y] - (y1-y0)*0.5, w: x1-x0, h: y1-y0, path: "sprites/square/#{color}.png", angle: ad }
       else
-        wv = s[:world_vertices]; c = s[:count]
-        x0 = 1e18; x1 = -1e18; y0 = 1e18; y1 = -1e18; cx = 0.0; cy = 0.0; vi = 0
-        while vi < c; vi2 = vi * 2; wx = wv[vi2]; wy = wv[vi2 + 1]
-          cx += wx; cy += wy
-          x0 = wx if wx < x0; x1 = wx if wx > x1; y0 = wy if wy < y0; y1 = wy if wy > y1; vi += 1; end
-        cx /= c; cy /= c; bw = x1 - x0; bh = y1 - y0
-        uw = 80.0 / (bw == 0 ? 1.0 : bw); uh = 80.0 / (bh == 0 ? 1.0 : bh)
+        wv = s[:world_vertices]; lv = s[:vertices]; c = s[:count]
+        lx0 = 1e18; lx1 = -1e18; ly0 = 1e18; ly1 = -1e18; vi = 0
+        while vi < c; vi2 = vi * 2; vx = lv[vi2]; vy = lv[vi2 + 1]
+          lx0 = vx if vx < lx0; lx1 = vx if vx > lx1; ly0 = vy if vy < ly0; ly1 = vy if vy > ly1; vi += 1; end
+        lbw = lx1 - lx0; lbh = ly1 - ly0
+        uw = 80.0 / (lbw == 0 ? 1.0 : lbw); uh = 80.0 / (lbh == 0 ? 1.0 : lbh)
+        wcx = 0.0; wcy = 0.0; vi = 0
+        while vi < c; vi2 = vi * 2; wcx += wv[vi2]; wcy += wv[vi2 + 1]; vi += 1; end
+        wcx /= c; wcy /= c
         tris = []; vi = 0
         while vi < c
           ni = vi + 1 < c ? vi + 1 : 0; vi2 = vi * 2; ni2 = ni * 2
-          tris << { x: cx, y: cy, x2: wv[vi2], y2: wv[vi2 + 1], x3: wv[ni2], y3: wv[ni2 + 1],
-                    source_x: (cx - x0) * uw, source_y: (cy - y0) * uh,
-                    source_x2: (wv[vi2] - x0) * uw, source_y2: (wv[vi2 + 1] - y0) * uh,
-                    source_x3: (wv[ni2] - x0) * uw, source_y3: (wv[ni2 + 1] - y0) * uh,
+          tris << { x: wcx, y: wcy, x2: wv[vi2], y2: wv[vi2 + 1], x3: wv[ni2], y3: wv[ni2 + 1],
+                    source_x: -lx0 * uw, source_y: -ly0 * uh,
+                    source_x2: (lv[vi2] - lx0) * uw, source_y2: (lv[vi2 + 1] - ly0) * uh,
+                    source_x3: (lv[ni2] - lx0) * uw, source_y3: (lv[ni2 + 1] - ly0) * uh,
                     path: "sprites/square/#{color}.png" }
           vi += 1
         end
@@ -778,7 +796,7 @@ def build_joint_scene args, idx
 
   floor = Physics.create_body w, x: 640, y: 10, type: :static
   Physics.add_body w, floor
-  _s = Physics.create_box w, body_id: floor[:id], w: 1280, h: 20, friction: 0.8
+  _s = Physics.create_box body: floor, w: 1280, h: 20, friction: 0.8
   Physics.add_shape w, _s
 
   case idx
@@ -796,10 +814,10 @@ def build_pendulum w, args
   # triple pendulum — hangs vertically, offset to swing
   anchor = Physics.create_body w, x: 640, y: 650, type: :static
   Physics.add_body w, anchor
-  _s = Physics.create_circle w, body_id: anchor[:id], radius: 8, density: 1.0
+  _s = Physics.create_circle body: anchor, radius: 8, density: 1.0
   Physics.add_shape w, _s
 
-  prev_id = anchor[:id]
+  prev = anchor
   lengths = [120, 100, 80]
   radii = [18, 15, 12]
   colors = %w[red blue green]
@@ -810,30 +828,30 @@ def build_pendulum w, args
     bx = (i == 0 ? 760.0 : 640.0)
     bob = Physics.create_body w, x: bx, y: by, type: :dynamic
     Physics.add_body w, bob
-    _s = Physics.create_circle w, body_id: bob[:id], radius: radii[i], density: 1.5, friction: 0.5, restitution: 0.4
+    _s = Physics.create_circle body: bob, radius: radii[i], density: 1.5, friction: 0.5, restitution: 0.4
     Physics.add_shape w, _s
     j = Physics::Joints.create_distance_joint w,
-      body_a_id: prev_id, body_b_id: bob[:id],
+      body_a: prev, body_b: bob,
       length: lengths[i].to_f,
       enable_spring: true, hertz: 5.0, damping_ratio: 0.5
     Physics::Joints.add_joint w, j
     args.state.joint_list << j
     args.state.joint_bodies << { body: bob, radius: radii[i], color: colors[i] }
-    prev_id = bob[:id]; prev_y = by
+    prev = bob; prev_y = by
     i += 1
   end
 
   # revolute pendulum on the left
   pivot = Physics.create_body w, x: 300, y: 600, type: :static
   Physics.add_body w, pivot
-  _s = Physics.create_circle w, body_id: pivot[:id], radius: 6, density: 1.0
+  _s = Physics.create_circle body: pivot, radius: 6, density: 1.0
   Physics.add_shape w, _s
   arm = Physics.create_body w, x: 300, y: 500, type: :dynamic
   Physics.add_body w, arm
-  _s = Physics.create_box w, body_id: arm[:id], w: 16, h: 200, density: 1.0, friction: 0.5
+  _s = Physics.create_box body: arm, w: 16, h: 200, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_revolute_joint w,
-    body_a_id: pivot[:id], body_b_id: arm[:id],
+    body_a: pivot, body_b: arm,
     local_anchor_bx: 0.0, local_anchor_by: 100.0,
     enable_limit: true, lower_angle: -1.2, upper_angle: 1.2
   Physics::Joints.add_joint w, j
@@ -843,14 +861,14 @@ def build_pendulum w, args
   # motorized revolute on the right
   motor_pivot = Physics.create_body w, x: 1000, y: 400, type: :static
   Physics.add_body w, motor_pivot
-  _s = Physics.create_circle w, body_id: motor_pivot[:id], radius: 6, density: 1.0
+  _s = Physics.create_circle body: motor_pivot, radius: 6, density: 1.0
   Physics.add_shape w, _s
   blade = Physics.create_body w, x: 1000, y: 400, type: :dynamic
   Physics.add_body w, blade
-  _s = Physics.create_box w, body_id: blade[:id], w: 200, h: 12, density: 0.5, friction: 0.5
+  _s = Physics.create_box body: blade, w: 200, h: 12, density: 0.5, friction: 0.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_revolute_joint w,
-    body_a_id: motor_pivot[:id], body_b_id: blade[:id],
+    body_a: motor_pivot, body_b: blade,
     enable_motor: true, motor_speed: 6.0, max_motor_torque: 500000.0
   Physics::Joints.add_joint w, j
   args.state.joint_list << j
@@ -860,38 +878,38 @@ end
 def build_chain w, args
   anchor = Physics.create_body w, x: 300, y: 600, type: :static
   Physics.add_body w, anchor
-  _s = Physics.create_circle w, body_id: anchor[:id], radius: 6, density: 1.0
+  _s = Physics.create_circle body: anchor, radius: 6, density: 1.0
   Physics.add_shape w, _s
   anchor2 = Physics.create_body w, x: 980, y: 600, type: :static
   Physics.add_body w, anchor2
-  _s = Physics.create_circle w, body_id: anchor2[:id], radius: 6, density: 1.0
+  _s = Physics.create_circle body: anchor2, radius: 6, density: 1.0
   Physics.add_shape w, _s
 
   colors = %w[red orange yellow green blue indigo]
   link_count = 15
   spacing = 40.0
   start_x = 300.0
-  prev_id = anchor[:id]
+  prev = anchor
   i = 0
   while i < link_count
     lx = start_x + (i + 1) * spacing
     link = Physics.create_body w, x: lx, y: 600.0, type: :dynamic, angular_damping: 0.5
     Physics.add_body w, link
-    _s = Physics.create_capsule w, body_id: link[:id], x1: -15, y1: 0, x2: 15, y2: 0, radius: 5, density: 0.8, friction: 0.6
+    _s = Physics.create_capsule body: link, x1: -15, y1: 0, x2: 15, y2: 0, radius: 5, density: 0.8, friction: 0.6
     Physics.add_shape w, _s
     j = Physics::Joints.create_revolute_joint w,
-      body_a_id: prev_id, body_b_id: link[:id],
+      body_a: prev, body_b: link,
       local_anchor_ax: (i == 0 ? 0.0 : 15.0), local_anchor_ay: 0.0,
       local_anchor_bx: -15.0, local_anchor_by: 0.0
     Physics::Joints.add_joint w, j
     args.state.joint_list << j
     args.state.joint_bodies << { body: link, capsule: true, hl: 15, radius: 5, color: colors[i % colors.length] }
-    prev_id = link[:id]
+    prev = link
     i += 1
   end
   # connect last to second anchor
   j = Physics::Joints.create_revolute_joint w,
-    body_a_id: prev_id, body_b_id: anchor2[:id],
+    body_a: prev, body_b: anchor2,
     local_anchor_ax: 15.0, local_anchor_ay: 0.0
   Physics::Joints.add_joint w, j
   args.state.joint_list << j
@@ -899,7 +917,7 @@ def build_chain w, args
   # drop a ball on it
   ball = Physics.create_body w, x: 640, y: 700, type: :dynamic
   Physics.add_body w, ball
-  _s = Physics.create_circle w, body_id: ball[:id], radius: 20, density: 3.0, friction: 0.5, restitution: 0.3
+  _s = Physics.create_circle body: ball, radius: 20, density: 3.0, friction: 0.5, restitution: 0.3
   Physics.add_shape w, _s
   args.state.joint_bodies << { body: ball, radius: 20, color: 'red' }
 end
@@ -911,33 +929,33 @@ def build_bridge w, args
 
   left_wall = Physics.create_body w, x: start_x, y: y, type: :static
   Physics.add_body w, left_wall
-  _s = Physics.create_box w, body_id: left_wall[:id], w: 20, h: 40, friction: 0.8
+  _s = Physics.create_box body: left_wall, w: 20, h: 40, friction: 0.8
   Physics.add_shape w, _s
   right_wall = Physics.create_body w, x: start_x + 10.0 + plank_count * plank_w + 10.0, y: y, type: :static
   Physics.add_body w, right_wall
-  _s = Physics.create_box w, body_id: right_wall[:id], w: 20, h: 40, friction: 0.8
+  _s = Physics.create_box body: right_wall, w: 20, h: 40, friction: 0.8
   Physics.add_shape w, _s
 
-  prev_id = left_wall[:id]
+  prev = left_wall
   i = 0
   while i < plank_count
     px = start_x + 10.0 + plank_w * 0.5 + i * plank_w
     plank = Physics.create_body w, x: px, y: y, type: :dynamic, linear_damping: 1.0, angular_damping: 3.0
     Physics.add_body w, plank
-    _s = Physics.create_box w, body_id: plank[:id], w: plank_w, h: plank_h, density: 0.5, friction: 0.8
+    _s = Physics.create_box body: plank, w: plank_w, h: plank_h, density: 0.5, friction: 0.8
     Physics.add_shape w, _s
     j = Physics::Joints.create_revolute_joint w,
-      body_a_id: prev_id, body_b_id: plank[:id],
+      body_a: prev, body_b: plank,
       local_anchor_ax: (i == 0 ? 10.0 : plank_w.to_f * 0.5), local_anchor_ay: 0.0,
       local_anchor_bx: -plank_w.to_f * 0.5, local_anchor_by: 0.0
     Physics::Joints.add_joint w, j
     args.state.joint_list << j
     args.state.joint_bodies << { body: plank, hw: plank_w / 2, hh: plank_h / 2, color: colors[i % colors.length] }
-    prev_id = plank[:id]
+    prev = plank
     i += 1
   end
   j = Physics::Joints.create_revolute_joint w,
-    body_a_id: prev_id, body_b_id: right_wall[:id],
+    body_a: prev, body_b: right_wall,
     local_anchor_ax: plank_w.to_f * 0.5, local_anchor_ay: 0.0,
     local_anchor_bx: -10.0, local_anchor_by: 0.0
   Physics::Joints.add_joint w, j
@@ -949,7 +967,7 @@ def build_bridge w, args
     bx = start_x + 160 + i * 50
     box = Physics.create_body w, x: bx, y: y + 40 + i * 20, type: :dynamic
     Physics.add_body w, box
-    _s = Physics.create_box w, body_id: box[:id], w: 20, h: 20, density: 0.4, friction: 0.6, restitution: 0.1
+    _s = Physics.create_box body: box, w: 20, h: 20, density: 0.4, friction: 0.6, restitution: 0.1
     Physics.add_shape w, _s
     args.state.joint_bodies << { body: box, hw: 10, hh: 10, color: %w[red blue green indigo violet][i] }
     i += 1
@@ -963,10 +981,10 @@ def build_prismatic_demo w, args
   Physics.add_body w, anchor
   elevator = Physics.create_body w, x: 300, y: 360, type: :dynamic
   Physics.add_body w, elevator
-  _s = Physics.create_box w, body_id: elevator[:id], w: 60, h: 30, density: 1.0, friction: 0.5
+  _s = Physics.create_box body: elevator, w: 60, h: 30, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_prismatic_joint w,
-    body_a_id: anchor[:id], body_b_id: elevator[:id],
+    body_a: anchor, body_b: elevator,
     local_axis_ax: 0.0, local_axis_ay: 1.0,
     enable_limit: true, lower_translation: -200.0, upper_translation: 200.0,
     enable_motor: true, motor_speed: 120.0, max_motor_force: 2000000.0
@@ -979,10 +997,10 @@ def build_prismatic_demo w, args
   Physics.add_body w, anchor2
   slider = Physics.create_body w, x: 950, y: 400, type: :dynamic
   Physics.add_body w, slider
-  _s = Physics.create_box w, body_id: slider[:id], w: 40, h: 40, density: 1.0, friction: 0.3
+  _s = Physics.create_box body: slider, w: 40, h: 40, density: 1.0, friction: 0.3
   Physics.add_shape w, _s
   j = Physics::Joints.create_prismatic_joint w,
-    body_a_id: anchor2[:id], body_b_id: slider[:id],
+    body_a: anchor2, body_b: slider,
     local_axis_ax: 1.0, local_axis_ay: 0.0,
     enable_spring: true, hertz: 2.0, damping_ratio: 0.3,
     enable_limit: true, lower_translation: -180.0, upper_translation: 180.0
@@ -995,10 +1013,10 @@ def build_prismatic_demo w, args
   Physics.add_body w, anchor3
   diag = Physics.create_body w, x: 640, y: 550, type: :dynamic
   Physics.add_body w, diag
-  _s = Physics.create_box w, body_id: diag[:id], w: 30, h: 30, density: 1.0, friction: 0.5
+  _s = Physics.create_box body: diag, w: 30, h: 30, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_prismatic_joint w,
-    body_a_id: anchor3[:id], body_b_id: diag[:id],
+    body_a: anchor3, body_b: diag,
     local_axis_ax: 1.0, local_axis_ay: 1.0,
     enable_limit: true, lower_translation: -150.0, upper_translation: 150.0,
     enable_spring: true, hertz: 1.0, damping_ratio: 0.5
@@ -1014,10 +1032,10 @@ def build_wheel_demo w, args
   Physics.add_body w, w_anchor
   cap = Physics.create_body w, x: 900, y: 410, type: :dynamic
   Physics.add_body w, cap
-  _s = Physics.create_capsule w, body_id: cap[:id], x1: 0, y1: -20, x2: 0, y2: 20, radius: 20, density: 1.0, friction: 0.5
+  _s = Physics.create_capsule body: cap, x1: 0, y1: -20, x2: 0, y2: 20, radius: 20, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_wheel_joint w,
-    body_a_id: w_anchor[:id], body_b_id: cap[:id],
+    body_a: w_anchor, body_b: cap,
     local_anchor_by: -10.0,
     local_axis_ax: 1.0, local_axis_ay: 1.0,
     enable_spring: true, hertz: 1.0, damping_ratio: 0.7,
@@ -1030,16 +1048,16 @@ def build_wheel_demo w, args
   # Car — matches Box2D Car/Driving sample
   chassis = Physics.create_body w, x: 300, y: 120, type: :dynamic
   Physics.add_body w, chassis
-  _s = Physics.create_box w, body_id: chassis[:id], w: 120, h: 30, density: 1.0, friction: 0.5
+  _s = Physics.create_box body: chassis, w: 120, h: 30, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   args.state.joint_bodies << { body: chassis, hw: 60, hh: 15, color: 'blue' }
 
   fw = Physics.create_body w, x: 350, y: 90, type: :dynamic
   Physics.add_body w, fw
-  _s = Physics.create_circle w, body_id: fw[:id], radius: 20, density: 2.0, friction: 1.5
+  _s = Physics.create_circle body: fw, radius: 20, density: 2.0, friction: 1.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_wheel_joint w,
-    body_a_id: chassis[:id], body_b_id: fw[:id],
+    body_a: chassis, body_b: fw,
     local_anchor_ax: 50.0, local_anchor_ay: -15.0,
     local_axis_ax: 0.0, local_axis_ay: 1.0,
     enable_spring: true, hertz: 5.0, damping_ratio: 0.7,
@@ -1051,10 +1069,10 @@ def build_wheel_demo w, args
 
   rw = Physics.create_body w, x: 250, y: 90, type: :dynamic
   Physics.add_body w, rw
-  _s = Physics.create_circle w, body_id: rw[:id], radius: 20, density: 2.0, friction: 1.5
+  _s = Physics.create_circle body: rw, radius: 20, density: 2.0, friction: 1.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_wheel_joint w,
-    body_a_id: chassis[:id], body_b_id: rw[:id],
+    body_a: chassis, body_b: rw,
     local_anchor_ax: -50.0, local_anchor_ay: -15.0,
     local_axis_ax: 0.0, local_axis_ay: 1.0,
     enable_spring: true, hertz: 5.0, damping_ratio: 0.7,
@@ -1069,11 +1087,11 @@ def build_wheel_demo w, args
   # ramp
   ramp = Physics.create_body w, x: 700, y: 60, type: :static
   Physics.add_body w, ramp
-  _s = Physics.create_segment w, body_id: ramp[:id], x1: -200, y1: -30, x2: 200, y2: 50
+  _s = Physics.create_segment body: ramp, x1: -200, y1: -30, x2: 200, y2: 50
   Physics.add_shape w, _s
   ramp2 = Physics.create_body w, x: 1100, y: 60, type: :static
   Physics.add_body w, ramp2
-  _s = Physics.create_segment w, body_id: ramp2[:id], x1: -150, y1: 50, x2: 150, y2: -30
+  _s = Physics.create_segment body: ramp2, x1: -150, y1: 50, x2: 150, y2: -30
   Physics.add_shape w, _s
 
   # obstacles
@@ -1081,7 +1099,7 @@ def build_wheel_demo w, args
   while i < 4
     ob = Physics.create_body w, x: 500 + i * 120, y: 30, type: :dynamic
     Physics.add_body w, ob
-    _s = Physics.create_box w, body_id: ob[:id], w: 20, h: 30, density: 0.3, friction: 0.5, restitution: 0.1
+    _s = Physics.create_box body: ob, w: 20, h: 30, density: 0.3, friction: 0.5, restitution: 0.1
     Physics.add_shape w, _s
     args.state.joint_bodies << { body: ob, hw: 10, hh: 15, color: %w[red orange yellow green][i] }
     i += 1
@@ -1092,14 +1110,14 @@ def build_weld_demo w, args
   # Hard weld L-shape — rigid connection
   b1 = Physics.create_body w, x: 400, y: 500, type: :dynamic
   Physics.add_body w, b1
-  _s = Physics.create_box w, body_id: b1[:id], w: 80, h: 20, density: 1.0, friction: 0.5
+  _s = Physics.create_box body: b1, w: 80, h: 20, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   b2 = Physics.create_body w, x: 440, y: 470, type: :dynamic
   Physics.add_body w, b2
-  _s = Physics.create_box w, body_id: b2[:id], w: 20, h: 80, density: 1.0, friction: 0.5
+  _s = Physics.create_box body: b2, w: 20, h: 80, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_weld_joint w,
-    body_a_id: b1[:id], body_b_id: b2[:id],
+    body_a: b1, body_b: b2,
     local_anchor_ax: 40.0, local_anchor_ay: -10.0,
     local_anchor_bx: 0.0, local_anchor_by: 40.0
   Physics::Joints.add_joint w, j
@@ -1110,19 +1128,19 @@ def build_weld_demo w, args
   # Cantilever beam — matches Box2D Cantilever sample
   anchor = Physics.create_body w, x: 100, y: 350, type: :static
   Physics.add_body w, anchor
-  _s = Physics.create_box w, body_id: anchor[:id], w: 20, h: 20, friction: 0.5
+  _s = Physics.create_box body: anchor, w: 20, h: 20, friction: 0.5
   Physics.add_shape w, _s
-  prev_id = anchor[:id]
+  prev = anchor
   seg_count = 8
   i = 0
   while i < seg_count
     sx = 130 + i * 40
     seg = Physics.create_body w, x: sx, y: 350, type: :dynamic
     Physics.add_body w, seg
-    _s = Physics.create_capsule w, body_id: seg[:id], x1: -20, y1: 0, x2: 20, y2: 0, radius: 5, density: 2.0, friction: 0.5
+    _s = Physics.create_capsule body: seg, x1: -20, y1: 0, x2: 20, y2: 0, radius: 5, density: 2.0, friction: 0.5
     Physics.add_shape w, _s
     j = Physics::Joints.create_weld_joint w,
-      body_a_id: prev_id, body_b_id: seg[:id],
+      body_a: prev, body_b: seg,
       local_anchor_ax: (i == 0 ? 10.0 : 20.0), local_anchor_ay: 0.0,
       local_anchor_bx: -20.0, local_anchor_by: 0.0,
       linear_hertz: 15.0, linear_damping_ratio: 0.5,
@@ -1130,7 +1148,7 @@ def build_weld_demo w, args
     Physics::Joints.add_joint w, j
     args.state.joint_list << j
     args.state.joint_bodies << { body: seg, capsule: true, hl: 20, radius: 5, color: %w[red orange yellow green blue indigo violet red][i] }
-    prev_id = seg[:id]
+    prev = seg
     i += 1
   end
 end
@@ -1146,10 +1164,10 @@ def build_motor_demo w, args
 
   body = Physics.create_body w, x: 640, y: 400, type: :dynamic
   Physics.add_body w, body
-  _s = Physics.create_box w, body_id: body[:id], w: 80, h: 20, density: 1.0, friction: 0.5
+  _s = Physics.create_box body: body, w: 80, h: 20, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_motor_joint w,
-    body_a_id: target[:id], body_b_id: body[:id],
+    body_a: target, body_b: body,
     linear_hertz: 4.0, linear_damping_ratio: 0.7,
     angular_hertz: 4.0, angular_damping_ratio: 0.7,
     max_spring_force: 10000000.0, max_spring_torque: 1000000.0
@@ -1162,10 +1180,10 @@ def build_motor_demo w, args
   Physics.add_body w, spring_anchor
   spring_body = Physics.create_body w, x: 300, y: 120, type: :dynamic
   Physics.add_body w, spring_body
-  _s = Physics.create_box w, body_id: spring_body[:id], w: 40, h: 40, density: 1.0, friction: 0.5
+  _s = Physics.create_box body: spring_body, w: 40, h: 40, density: 1.0, friction: 0.5
   Physics.add_shape w, _s
   j = Physics::Joints.create_motor_joint w,
-    body_a_id: spring_anchor[:id], body_b_id: spring_body[:id],
+    body_a: spring_anchor, body_b: spring_body,
     local_anchor_ax: 10.0, local_anchor_ay: 10.0,
     local_anchor_bx: 10.0, local_anchor_by: 10.0,
     linear_hertz: 7.5, linear_damping_ratio: 0.7,
@@ -1233,7 +1251,7 @@ def tick_joints_demo args
     mx = args.inputs.mouse.x; my = args.inputs.mouse.y
     ball = Physics.create_body w, x: mx, y: my, type: :dynamic
     Physics.add_body w, ball
-    _s = Physics.create_circle w, body_id: ball[:id], radius: 14, density: 1.5, friction: 0.5, restitution: 0.3
+    _s = Physics.create_circle body: ball, radius: 14, density: 1.5, friction: 0.5, restitution: 0.3
     Physics.add_shape w, _s
     args.state.joint_bodies << { body: ball, radius: 14, color: %w[red orange yellow green blue indigo violet][rand(7)] }
   end
@@ -1246,7 +1264,7 @@ def tick_joints_demo args
 
   # draw joints as lines
   w[:joints].each do |j|
-    ba = w[:bodies][j[:body_a_id]]; bb = w[:bodies][j[:body_b_id]]
+    ba = j[:body_a]; bb = j[:body_b]
     next unless ba && bb
     cos_a = Math.cos(ba[:angle]); sin_a = Math.sin(ba[:angle])
     cos_b = Math.cos(bb[:angle]); sin_b = Math.sin(bb[:angle])
@@ -1304,7 +1322,7 @@ def tick_joints_demo args
 
   # draw static walls
   w[:shapes].each do |s|
-    b = w[:bodies][s[:body_id]]
+    b = s[:body]
     next unless b[:type] == :static
     if s[:type] == :polygon
       wv = s[:world_vertices]; c = s[:count]; vi = 0

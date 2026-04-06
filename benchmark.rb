@@ -80,7 +80,7 @@ module BenchmarkTest
         x = 100 + rand(1080); y = 50 + rand(600)
         b = Physics.create_body w, x: x, y: y, type: :dynamic
         Physics.add_body w, b
-        _s = Physics.create_circle w, body_id: b[:id], radius: 4 + rand(6), density: 0.5, friction: 0.4, restitution: 0.3
+        _s = Physics.create_circle body: b, radius: 4 + rand(6), density: 0.5, friction: 0.4, restitution: 0.3
         Physics.add_shape w, _s
         i += 1
       end
@@ -106,7 +106,7 @@ module BenchmarkTest
           verts << (Math.sin(a) * r * (0.7 + rand * 0.3))
           si += 1
         end
-        _s = Physics.create_polygon w, body_id: b[:id], vertices: verts, density: 0.3, friction: 0.5, restitution: 0.2
+        _s = Physics.create_polygon body: b, vertices: verts, density: 0.3, friction: 0.5, restitution: 0.2
         Physics.add_shape w, _s
         i += 1
       end
@@ -124,18 +124,18 @@ module BenchmarkTest
         if kind == 0
           b = Physics.create_body w, x: x, y: y, type: :dynamic
           Physics.add_body w, b
-          _s = Physics.create_circle w, body_id: b[:id], radius: 3 + rand(8), density: 0.5, friction: 0.5, restitution: 0.3
+          _s = Physics.create_circle body: b, radius: 3 + rand(8), density: 0.5, friction: 0.5, restitution: 0.3
           Physics.add_shape w, _s
         elsif kind == 1
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
           Physics.add_body w, b
-          _s = Physics.create_box w, body_id: b[:id], w: 6 + rand(20), h: 6 + rand(20), density: 0.6, friction: 0.5, restitution: 0.2
+          _s = Physics.create_box body: b, w: 6 + rand(20), h: 6 + rand(20), density: 0.6, friction: 0.5, restitution: 0.2
           Physics.add_shape w, _s
         elsif kind == 2
           hl = 8 + rand(15); r = 3 + rand(6)
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
           Physics.add_body w, b
-          _s = Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.5, friction: 0.5, restitution: 0.2
+          _s = Physics.create_capsule body: b, x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.5, friction: 0.5, restitution: 0.2
           Physics.add_shape w, _s
         else
           sides = 5 + rand(4); rad = 8 + rand(12)
@@ -147,7 +147,7 @@ module BenchmarkTest
             verts << Math.cos(a) * rad << Math.sin(a) * rad
             si += 1
           end
-          _s = Physics.create_polygon w, body_id: b[:id], vertices: verts, density: 0.5, friction: 0.5, restitution: 0.2
+          _s = Physics.create_polygon body: b, vertices: verts, density: 0.5, friction: 0.5, restitution: 0.2
           Physics.add_shape w, _s
         end
         i += 1
@@ -161,22 +161,22 @@ module BenchmarkTest
       # wide walls
       floor = Physics.create_body w, x: 640, y: -10, type: :static
       Physics.add_body w, floor
-      _s = Physics.create_box w, body_id: floor[:id], w: 3000, h: 40, friction: 0.5
+      _s = Physics.create_box body: floor, w: 3000, h: 40, friction: 0.5
       Physics.add_shape w, _s
       lw = Physics.create_body w, x: -500, y: 360, type: :static
       Physics.add_body w, lw
-      _s = Physics.create_box w, body_id: lw[:id], w: 40, h: 1500, friction: 0.5
+      _s = Physics.create_box body: lw, w: 40, h: 1500, friction: 0.5
       Physics.add_shape w, _s
       rw = Physics.create_body w, x: 1780, y: 360, type: :static
       Physics.add_body w, rw
-      _s = Physics.create_box w, body_id: rw[:id], w: 40, h: 1500, friction: 0.5
+      _s = Physics.create_box body: rw, w: 40, h: 1500, friction: 0.5
       Physics.add_shape w, _s
       i = 0
       while i < 80
         x = -400 + rand(2100); y = 50 + rand(1200)
         b = Physics.create_body w, x: x, y: y, type: :dynamic
         Physics.add_body w, b
-        _s = Physics.create_circle w, body_id: b[:id], radius: 8 + rand(15), density: 0.4, friction: 0.5, restitution: 0.4
+        _s = Physics.create_circle body: b, radius: 8 + rand(15), density: 0.4, friction: 0.5, restitution: 0.4
         Physics.add_shape w, _s
         i += 1
       end
@@ -194,7 +194,7 @@ module BenchmarkTest
           x = 340 + col * 42; y = 22 + row * 22
           b = Physics.create_body w, x: x, y: y, type: :dynamic
           Physics.add_body w, b
-          _s = Physics.create_box w, body_id: b[:id], w: 40, h: 20, density: 1.0, friction: 0.6, restitution: 0.0
+          _s = Physics.create_box body: b, w: 40, h: 20, density: 1.0, friction: 0.6, restitution: 0.0
           Physics.add_shape w, _s
           row += 1
         end
@@ -213,10 +213,10 @@ module BenchmarkTest
         x = 100 + rand(1080); y = 50 + rand(600)
         b = Physics.create_body w, x: x, y: y, type: :dynamic
         Physics.add_body w, b
-        _s = Physics.create_circle w, body_id: b[:id], radius: 5 + rand(8), density: 0.3, friction: 0.1, restitution: 0.95
+        _s = Physics.create_circle body: b, radius: 5 + rand(8), density: 0.3, friction: 0.1, restitution: 0.95
         Physics.add_shape w, _s
         vx = (rand - 0.5) * 800; vy = (rand - 0.5) * 800
-        Physics.set_velocity w, b[:id], vx, vy
+        Physics.set_velocity w, b, vx, vy
         i += 1
       end
     end
@@ -231,7 +231,7 @@ module BenchmarkTest
         x = 200 + rand(880); y = 20 + (i / 10) * 14
         b = Physics.create_body w, x: x, y: y, type: :dynamic
         Physics.add_body w, b
-        _s = Physics.create_box w, body_id: b[:id], w: 10 + rand(12), h: 10 + rand(12), density: 0.8, friction: 0.7, restitution: 0.05
+        _s = Physics.create_box body: b, w: 10 + rand(12), h: 10 + rand(12), density: 0.8, friction: 0.7, restitution: 0.05
         Physics.add_shape w, _s
         i += 1
       end
@@ -247,19 +247,19 @@ module BenchmarkTest
     def make_box_walls w
       floor = Physics.create_body w, x: 640, y: -10, type: :static
       Physics.add_body w, floor
-      _s = Physics.create_box w, body_id: floor[:id], w: 1400, h: 40, friction: 0.8
+      _s = Physics.create_box body: floor, w: 1400, h: 40, friction: 0.8
       Physics.add_shape w, _s
       lw = Physics.create_body w, x: -10, y: 360, type: :static
       Physics.add_body w, lw
-      _s = Physics.create_box w, body_id: lw[:id], w: 40, h: 800, friction: 0.5
+      _s = Physics.create_box body: lw, w: 40, h: 800, friction: 0.5
       Physics.add_shape w, _s
       rw = Physics.create_body w, x: 1290, y: 360, type: :static
       Physics.add_body w, rw
-      _s = Physics.create_box w, body_id: rw[:id], w: 40, h: 800, friction: 0.5
+      _s = Physics.create_box body: rw, w: 40, h: 800, friction: 0.5
       Physics.add_shape w, _s
       ceil = Physics.create_body w, x: 640, y: 730, type: :static
       Physics.add_body w, ceil
-      _s = Physics.create_box w, body_id: ceil[:id], w: 1400, h: 40, friction: 0.5
+      _s = Physics.create_box body: ceil, w: 1400, h: 40, friction: 0.5
       Physics.add_shape w, _s
     end
 
@@ -349,17 +349,17 @@ module BenchmarkTest
         if kind == 0
           b = Physics.create_body w, x: x, y: y, type: :dynamic
           Physics.add_body w, b
-          _s = Physics.create_circle w, body_id: b[:id], radius: 4 + rand(5), density: 0.5, friction: 0.5, restitution: 0.2
+          _s = Physics.create_circle body: b, radius: 4 + rand(5), density: 0.5, friction: 0.5, restitution: 0.2
           Physics.add_shape w, _s
         elsif kind == 1
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
           Physics.add_body w, b
-          _s = Physics.create_box w, body_id: b[:id], w: 6 + rand(10), h: 6 + rand(10), density: 0.6, friction: 0.5, restitution: 0.1
+          _s = Physics.create_box body: b, w: 6 + rand(10), h: 6 + rand(10), density: 0.6, friction: 0.5, restitution: 0.1
           Physics.add_shape w, _s
         else
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
           Physics.add_body w, b
-          _s = Physics.create_capsule w, body_id: b[:id], x1: -5, y1: 0, x2: 5, y2: 0, radius: 3 + rand(3), density: 0.5, friction: 0.5, restitution: 0.1
+          _s = Physics.create_capsule body: b, x1: -5, y1: 0, x2: 5, y2: 0, radius: 3 + rand(3), density: 0.5, friction: 0.5, restitution: 0.1
           Physics.add_shape w, _s
         end
         i += 1
@@ -369,7 +369,7 @@ module BenchmarkTest
     def drop_disturber w
       b = Physics.create_body w, x: 300 + rand(680), y: 710, type: :dynamic
       Physics.add_body w, b
-      _s = Physics.create_circle w, body_id: b[:id], radius: 20, density: 5.0, friction: 0.3, restitution: 0.1
+      _s = Physics.create_circle body: b, radius: 20, density: 5.0, friction: 0.3, restitution: 0.1
       Physics.add_shape w, _s
     end
 
@@ -419,7 +419,7 @@ module BenchmarkTest
       deg = 180.0 / Math::PI
       shapes = w[:shapes]; i = 0
       while i < shapes.length
-        s = shapes[i]; b = Physics.find_body w, s[:body_id]; i += 1
+        s = shapes[i]; b = s[:body]; i += 1
         next if b[:x] != b[:x]
         ad = b[:angle] * deg
         if s[:type] == :circle
