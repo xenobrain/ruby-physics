@@ -370,8 +370,8 @@ module Physics
       if body[:type] == :dynamic
         body[:mass] += shape[:mass]
         body[:inertia] += shape[:inertia]
-        body[:inv_mass] = 1.0 / body[:mass]
-        body[:inv_inertia] = 1.0 / body[:inertia]
+        body[:inv_mass] = body[:mass] > 0.0 ? 1.0 / body[:mass] : 0.0
+        body[:inv_inertia] = body[:inertia] > 0.0 ? 1.0 / body[:inertia] : 0.0
       end
       transform_shape shape, body
       shape
@@ -430,12 +430,8 @@ module Physics
       if body[:type] == :dynamic
         body[:mass] -= shape[:mass]
         body[:inertia] -= shape[:inertia]
-        if body[:mass] > 0.0
-          body[:inv_mass] = 1.0 / body[:mass]
-          body[:inv_inertia] = 1.0 / body[:inertia]
-        else
-          body[:inv_mass] = 0.0; body[:inv_inertia] = 0.0
-        end
+        body[:inv_mass] = body[:mass] > 0.0 ? 1.0 / body[:mass] : 0.0
+        body[:inv_inertia] = body[:inertia] > 0.0 ? 1.0 / body[:inertia] : 0.0
       end
 
       shapes = world[:shapes]
@@ -814,7 +810,7 @@ module Physics
 
     def insert_shape cells, pool, shift, s
       ax0 = s[:aabb_x0]; ay0 = s[:aabb_y0]; ax1 = s[:aabb_x1]; ay1 = s[:aabb_y1]
-      return if ax0 != ax0 || ay0 != ay0 || ax1 != ax1 || ay1 != ay1 || ax0 > ax1 || ay0 > ay1 || ax0 < -10000 || ax1 > 20000
+      return if ax0 != ax0 || ay0 != ay0 || ax1 != ax1 || ay1 != ay1 || ax0 > ax1 || ay0 > ay1 || ax0 < -1e7 || ax1 > 1e7 || ay0 < -1e7 || ay1 > 1e7
       x0 = (ax0 - SPECULATIVE_DISTANCE).floor >> shift
       y0 = (ay0 - SPECULATIVE_DISTANCE).floor >> shift
       x1 = (ax1 + SPECULATIVE_DISTANCE).floor >> shift
@@ -841,7 +837,7 @@ module Physics
 
     def spatial_hash_broadphase world, shapes, bp, n, candidates, seen
       shift = bp[:shift]; sc = bp[:static_cells]; dc = bp[:dynamic_cells]; pool = bp[:pool]
-      if bp[:static_dirty] || bp[:static_shape_count] != n
+      if bp[:static_dirty]
         sc.each_value { |arr| arr.clear; pool << arr }
         sc.clear
         i = 0
@@ -852,7 +848,7 @@ module Physics
           end
           i += 1
         end
-        bp[:static_dirty] = false; bp[:static_shape_count] = n
+        bp[:static_dirty] = false
       end
       dc.each_value { |arr| arr.clear; pool << arr }
       dc.clear
@@ -957,7 +953,7 @@ module Physics
           if cost1 < best_cost; best_sibling = c1; best_cost = cost1; end
         else
           area1 = 2.0 * ((n1[:aabb_x1] - n1[:aabb_x0]) + (n1[:aabb_y1] - n1[:aabb_y0]))
-          diff1 = area_d - area1; diff1 = 0.0 if diff1 > 0.0
+          diff1 = area_d - area1; diff1 = 0.0 if diff1 < 0.0
           lower1 = inherited_cost + direct_cost1 + diff1
         end
         vx0 = n2[:aabb_x0] < bx0 ? n2[:aabb_x0] : bx0; vy0 = n2[:aabb_y0] < by0 ? n2[:aabb_y0] : by0
@@ -968,7 +964,7 @@ module Physics
           if cost2 < best_cost; best_sibling = c2; best_cost = cost2; end
         else
           area2 = 2.0 * ((n2[:aabb_x1] - n2[:aabb_x0]) + (n2[:aabb_y1] - n2[:aabb_y0]))
-          diff2 = area_d - area2; diff2 = 0.0 if diff2 > 0.0
+          diff2 = area_d - area2; diff2 = 0.0 if diff2 < 0.0
           lower2 = inherited_cost + direct_cost2 + diff2
         end
         break if leaf1 && leaf2
@@ -1211,7 +1207,7 @@ module Physics
     def tree_broadphase world, shapes, bp, n, candidates, seen
       st = bp[:static_tree] ||= tree_create
       dt = bp[:dynamic_tree] ||= tree_create
-      if bp[:static_dirty] || bp[:static_shape_count] != n
+      if bp[:static_dirty]
         tree_reset st
         i = 0
         while i < n
@@ -1223,7 +1219,7 @@ module Physics
           end
           i += 1
         end
-        bp[:static_dirty] = false; bp[:static_shape_count] = n
+        bp[:static_dirty] = false
       end
       i = 0
       while i < n
@@ -3482,6 +3478,12 @@ end
 module Islands
   SLEEP_THRESHOLD = 800.0
   SLEEP_TIME      = 0.5
+  SPLIT_BODY_SET  ||= {}
+  SPLIT_ADJACENCY ||= {}
+  SPLIT_VISITED   ||= {}
+  SPLIT_COMPONENTS ||= []
+  SPLIT_STACK     ||= []
+  SPLIT_ADJ_POOL  ||= []
 
   class << self
     def create_island world, body
@@ -3587,17 +3589,18 @@ module Islands
       bodies = island[:bodies]
       return if bodies.length <= 1
 
-      body_set = {}
-      i = 0
-      while i < bodies.length
-        body_set[bodies[i].object_id] = bodies[i]
-        i += 1
-      end
+      body_set = SPLIT_BODY_SET; body_set.clear
+      adjacency = SPLIT_ADJACENCY
+      adj_pool = SPLIT_ADJ_POOL
+      adjacency.each_value { |arr| arr.clear; adj_pool << arr }
+      adjacency.clear
 
-      adjacency = {}
       i = 0
       while i < bodies.length
-        adjacency[bodies[i].object_id] = []
+        oid = bodies[i].object_id
+        body_set[oid] = bodies[i]
+        arr = adj_pool.pop || []
+        adjacency[oid] = arr
         i += 1
       end
 
@@ -3623,15 +3626,14 @@ module Islands
         end
       end
 
-      visited = {}
-      components = []
-      stack = []
+      visited = SPLIT_VISITED; visited.clear
+      components = SPLIT_COMPONENTS; components.clear
+      stack = SPLIT_STACK; stack.clear
       i = 0
       while i < bodies.length
         seed_oid = bodies[i].object_id; i += 1
         next if visited[seed_oid]
         component = [body_set[seed_oid]]
-        stack.clear
         stack << seed_oid
         visited[seed_oid] = true
         while stack.length > 0
