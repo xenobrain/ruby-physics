@@ -157,27 +157,27 @@ s = Physics.create_circle
   layer: Physics::LAYERS[:player], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
 Physics.add_shape w, s
 
-s = Physics.create_box w,
+s = Physics.create_box
   body: b,
   w: 40, h: 20,
   density: 1.0, friction: 0.6, restitution: 0.0,
   layer: Physics::LAYERS[:terrain]  # omit mask: to collide with everything
 Physics.add_shape w, s
 
-s = Physics.create_polygon w,
+s = Physics.create_polygon
   body: b,
   vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
   density: 1.0, friction: 0.6, restitution: 0.0
 Physics.add_shape w, s
 
-s = Physics.create_capsule w,
+s = Physics.create_capsule
   body: b,
   x1: -20, y1: 0, x2: 20, y2: 0,  # local endpoints
   radius: 8.0,
   density: 1.0, friction: 0.6, restitution: 0.0
 Physics.add_shape w, s
 
-s = Physics.create_segment w,
+s = Physics.create_segment
   body: b,
   x1: -100, y1: 0, x2: 100, y2: 0,  # local endpoints (zero-thickness line)
   friction: 0.6, restitution: 0.0
