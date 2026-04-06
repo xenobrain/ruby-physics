@@ -116,7 +116,7 @@ module Physics
       lo ^ (hi + 0x9e3779b9 + (lo << 6) + (lo >> 2))
     end
 
-    def create_body world, x: 0.0, y: 0.0, angle: 0.0, type: :dynamic, gravity_scale: 1.0, linear_damping: 0.0, angular_damping: 0.0
+    def create_body x: 0.0, y: 0.0, angle: 0.0, type: :dynamic, gravity_scale: 1.0, linear_damping: 0.0, angular_damping: 0.0
       body = {
         x: x.to_f, y: y.to_f, angle: angle.to_f,
         vx: 0.0, vy: 0.0, w: 0.0,
@@ -2268,7 +2268,7 @@ end
 module Joints
   class << self
     #  Distance Joint
-    def create_distance_joint world, body_a:, body_b:,
+    def create_distance_joint body_a:, body_b:,
                               local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                               local_anchor_bx: 0.0, local_anchor_by: 0.0,
                               length: nil, hertz: 0.0, damping_ratio: 0.0,
@@ -2312,7 +2312,7 @@ module Joints
     end
 
     # Revolute Joint
-    def create_revolute_joint world, body_a:, body_b:,
+    def create_revolute_joint body_a:, body_b:,
                               local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                               local_anchor_bx: 0.0, local_anchor_by: 0.0,
                               reference_angle: nil,
@@ -2346,7 +2346,7 @@ module Joints
     end
 
     # Prismatic Joint
-    def create_prismatic_joint world, body_a:, body_b:,
+    def create_prismatic_joint body_a:, body_b:,
                                local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                                local_anchor_bx: 0.0, local_anchor_by: 0.0,
                                local_axis_ax: 1.0, local_axis_ay: 0.0,
@@ -2386,7 +2386,7 @@ module Joints
     end
 
     # Weld Joint
-    def create_weld_joint world, body_a:, body_b:,
+    def create_weld_joint body_a:, body_b:,
                           local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                           local_anchor_bx: 0.0, local_anchor_by: 0.0,
                           reference_angle: nil,
@@ -2416,7 +2416,7 @@ module Joints
     end
 
     # Wheel Joint
-    def create_wheel_joint world, body_a:, body_b:,
+    def create_wheel_joint body_a:, body_b:,
                            local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                            local_anchor_bx: 0.0, local_anchor_by: 0.0,
                            local_axis_ax: 0.0, local_axis_ay: 1.0,
@@ -2452,7 +2452,7 @@ module Joints
     end
 
     # Motor Joint
-    def create_motor_joint world, body_a:, body_b:,
+    def create_motor_joint body_a:, body_b:,
                            local_anchor_ax: 0.0, local_anchor_ay: 0.0,
                            local_anchor_bx: 0.0, local_anchor_by: 0.0,
                            reference_angle: nil,

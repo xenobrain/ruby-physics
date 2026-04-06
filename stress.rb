@@ -33,19 +33,19 @@ module StressTest
       w = Physics.create_world
       args.state.world = w
 
-      floor = Physics.create_body w, x: 640, y: -10, type: :static
+      floor = Physics.create_body x: 640, y: -10, type: :static
       Physics.add_body w, floor
       _s = Physics.create_box body: floor, w: 1400, h: 40, friction: 0.8
       Physics.add_shape w, _s
-      lw = Physics.create_body w, x: -10, y: 360, type: :static
+      lw = Physics.create_body x: -10, y: 360, type: :static
       Physics.add_body w, lw
       _s = Physics.create_box body: lw, w: 40, h: 800, friction: 0.5
       Physics.add_shape w, _s
-      rw = Physics.create_body w, x: 1290, y: 360, type: :static
+      rw = Physics.create_body x: 1290, y: 360, type: :static
       Physics.add_body w, rw
       _s = Physics.create_box body: rw, w: 40, h: 800, friction: 0.5
       Physics.add_shape w, _s
-      ceil = Physics.create_body w, x: 640, y: 730, type: :static
+      ceil = Physics.create_body x: 640, y: 730, type: :static
       Physics.add_body w, ceil
       _s = Physics.create_box body: ceil, w: 1400, h: 40, friction: 0.5
       Physics.add_shape w, _s
@@ -56,18 +56,18 @@ module StressTest
         y = 100 + rand(500)
         kind = i % 3
         if kind == 0
-          b = Physics.create_body w, x: x, y: y, type: :dynamic
+          b = Physics.create_body x: x, y: y, type: :dynamic
           Physics.add_body w, b
           _s = Physics.create_circle body: b, radius: 5 + rand(10), density: 0.5, friction: 0.6, restitution: 0.3
           Physics.add_shape w, _s
         elsif kind == 1
-          b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
+          b = Physics.create_body x: x, y: y, angle: rand - 0.5, type: :dynamic
           Physics.add_body w, b
           _s = Physics.create_box body: b, w: 8 + rand(14), h: 8 + rand(14), density: 0.8, friction: 0.6, restitution: 0.2
           Physics.add_shape w, _s
         else
           hl = 6 + rand(10); r = 3 + rand(5)
-          b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
+          b = Physics.create_body x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
           Physics.add_body w, b
           _s = Physics.create_capsule body: b, x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
           Physics.add_shape w, _s
@@ -84,15 +84,15 @@ module StressTest
     end
 
     def make_walls w
-      floor = Physics.create_body w, x: 640, y: -10, type: :static
+      floor = Physics.create_body x: 640, y: -10, type: :static
       Physics.add_body w, floor
       _s = Physics.create_box body: floor, w: 1400, h: 40, friction: 0.8
       Physics.add_shape w, _s
-      lw = Physics.create_body w, x: -10, y: 360, type: :static
+      lw = Physics.create_body x: -10, y: 360, type: :static
       Physics.add_body w, lw
       _s = Physics.create_box body: lw, w: 40, h: 800, friction: 0.5
       Physics.add_shape w, _s
-      rw = Physics.create_body w, x: 1290, y: 360, type: :static
+      rw = Physics.create_body x: 1290, y: 360, type: :static
       Physics.add_body w, rw
       _s = Physics.create_box body: rw, w: 40, h: 800, friction: 0.5
       Physics.add_shape w, _s
@@ -110,18 +110,18 @@ module StressTest
         y = 200 + rand(400)
         kind = i % 3
         if kind == 0
-          b = Physics.create_body w, x: x, y: y, type: :dynamic
+          b = Physics.create_body x: x, y: y, type: :dynamic
           Physics.add_body w, b
           _s = Physics.create_circle body: b, radius: 8 + rand(12), density: 0.5, friction: 0.6, restitution: 0.3
           Physics.add_shape w, _s
         elsif kind == 1
-          b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
+          b = Physics.create_body x: x, y: y, angle: rand - 0.5, type: :dynamic
           Physics.add_body w, b
           _s = Physics.create_box body: b, w: 10 + rand(16), h: 10 + rand(16), density: 0.8, friction: 0.6, restitution: 0.2
           Physics.add_shape w, _s
         else
           hl = 8 + rand(10); r = 4 + rand(5)
-          b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
+          b = Physics.create_body x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
           Physics.add_body w, b
           _s = Physics.create_capsule body: b, x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
           Physics.add_shape w, _s
@@ -211,18 +211,18 @@ module StressTest
         y = 600 + rand(80)
         kind = rand 3
         if kind == 0
-          b = Physics.create_body w, x: x, y: y, type: :dynamic
+          b = Physics.create_body x: x, y: y, type: :dynamic
           Physics.add_body w, b
           _s = Physics.create_circle body: b, radius: 6 + rand(10), density: 0.5, friction: 0.6, restitution: 0.3
           Physics.add_shape w, _s
         elsif kind == 1
-          b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
+          b = Physics.create_body x: x, y: y, angle: rand - 0.5, type: :dynamic
           Physics.add_body w, b
           _s = Physics.create_box body: b, w: 8 + rand(14), h: 8 + rand(14), density: 0.8, friction: 0.6, restitution: 0.2
           Physics.add_shape w, _s
         else
           hl = 6 + rand(8); r = 3 + rand(5)
-          b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
+          b = Physics.create_body x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
           Physics.add_body w, b
           _s = Physics.create_capsule body: b, x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
           Physics.add_shape w, _s

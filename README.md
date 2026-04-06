@@ -34,14 +34,16 @@ def boot args
   w = Physics.create_world
 
   # static ground
-  ground = Physics.create_body w, x: 640, y: 10, type: :static
+  ground = Physics.create_body x: 640, y: 10, type: :static
   Physics.add_body w, ground
-  Physics.add_shape w, Physics.create_box(body: ground, w: 1280, h: 20, friction: 0.8)
+  _s = Physics.create_box body: ground, w: 1280, h: 20, friction: 0.8
+  Physics.add_shape w, _s
 
   # dynamic body
-  ball = Physics.create_body w, x: 640, y: 400, type: :dynamic
+  ball = Physics.create_body x: 640, y: 400, type: :dynamic
   Physics.add_body w, ball
-  Physics.add_shape w, Physics.create_circle(body: ball, radius: 20, density: 1.0)
+  _s = Physics.create_circle body: ball, radius: 20, density: 1.0
+  Physics.add_shape w, _s
 
   args.state.world = w
   args.state.ball = ball
@@ -110,12 +112,11 @@ Advances the simulation by one time step. Call once per frame.
 ### Bodies
 
 ```ruby
-b = Physics.create_body w,
-  x: 0.0, y: 0.0, angle: 0.0,
-  type: :dynamic,              # :dynamic, :static, or :kinematic
-  gravity_scale: 1.0,
-  linear_damping: 0.0,
-  angular_damping: 0.0
+b = Physics.create_body x: 0.0, y: 0.0, angle: 0.0,
+                        type: :dynamic,        # :dynamic, :static, or :kinematic
+                        gravity_scale: 1.0,
+                        linear_damping: 0.0,
+                        angular_damping: 0.0
 Physics.add_body w, b
 ```
 
@@ -149,38 +150,32 @@ Physics.remove_shape w, s
 ```
 
 ```ruby
-s = Physics.create_circle
-  body: b,
-  radius: 20.0,
-  offset_x: 0.0, offset_y: 0.0,  # local offset from body center
-  density: 1.0, friction: 0.6, restitution: 0.0,
-  layer: Physics::LAYERS[:player], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
+s = Physics.create_circle body: b, radius: 20.0,
+                          offset_x: 0.0, offset_y: 0.0,  # local offset from body center
+                          density: 1.0, friction: 0.6, restitution: 0.0,
+                          layer: Physics::LAYERS[:player],
+                          mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
 Physics.add_shape w, s
 
-s = Physics.create_box
-  body: b,
-  w: 40, h: 20,
-  density: 1.0, friction: 0.6, restitution: 0.0,
-  layer: Physics::LAYERS[:terrain]  # omit mask: to collide with everything
+s = Physics.create_box body: b, w: 40, h: 20,
+                       density: 1.0, friction: 0.6, restitution: 0.0,
+                       layer: Physics::LAYERS[:terrain]  # omit mask: to collide with everything
 Physics.add_shape w, s
 
-s = Physics.create_polygon
-  body: b,
-  vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
-  density: 1.0, friction: 0.6, restitution: 0.0
+s = Physics.create_polygon body: b,
+                           vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
+                           density: 1.0, friction: 0.6, restitution: 0.0
 Physics.add_shape w, s
 
-s = Physics.create_capsule
-  body: b,
-  x1: -20, y1: 0, x2: 20, y2: 0,  # local endpoints
-  radius: 8.0,
-  density: 1.0, friction: 0.6, restitution: 0.0
+s = Physics.create_capsule body: b,
+                           x1: -20, y1: 0, x2: 20, y2: 0,  # local endpoints
+                           radius: 8.0,
+                           density: 1.0, friction: 0.6, restitution: 0.0
 Physics.add_shape w, s
 
-s = Physics.create_segment
-  body: b,
-  x1: -100, y1: 0, x2: 100, y2: 0,  # local endpoints (zero-thickness line)
-  friction: 0.6, restitution: 0.0
+s = Physics.create_segment body: b,
+                           x1: -100, y1: 0, x2: 100, y2: 0,  # local endpoints (zero-thickness line)
+                           friction: 0.6, restitution: 0.0
 Physics.add_shape w, s
 ```
 
@@ -255,54 +250,48 @@ Physics::Joints.remove_joint w, j
 ```
 
 ```ruby
-j = Physics::Joints.create_distance_joint w,
-  body_a: ba, body_b: bb,
-  local_anchor_ax: 0.0, local_anchor_ay: 0.0,
-  local_anchor_bx: 0.0, local_anchor_by: 0.0,
-  length: nil,                    # auto-computed from initial positions if nil
-  enable_spring: false, hertz: 0.0, damping_ratio: 0.0,
-  enable_limit: false, min_length: nil, max_length: nil,
-  enable_motor: false, motor_speed: 0.0, max_motor_force: 0.0
+j = Physics::Joints.create_distance_joint body_a: ba, body_b: bb,
+      local_anchor_ax: 0.0, local_anchor_ay: 0.0,
+      local_anchor_bx: 0.0, local_anchor_by: 0.0,
+      length: nil,                    # auto-computed from initial positions if nil
+      enable_spring: false, hertz: 0.0, damping_ratio: 0.0,
+      enable_limit: false, min_length: nil, max_length: nil,
+      enable_motor: false, motor_speed: 0.0, max_motor_force: 0.0
 Physics::Joints.add_joint w, j
 
-j = Physics::Joints.create_revolute_joint w,
-  body_a: ba, body_b: bb,
-  local_anchor_ax: 0.0, local_anchor_ay: 0.0,
-  local_anchor_bx: 0.0, local_anchor_by: 0.0,
-  enable_spring: false, hertz: 0.0, damping_ratio: 0.0, target_angle: 0.0,
-  enable_limit: false, lower_angle: 0.0, upper_angle: 0.0,
-  enable_motor: false, motor_speed: 0.0, max_motor_torque: 0.0
+j = Physics::Joints.create_revolute_joint body_a: ba, body_b: bb,
+      local_anchor_ax: 0.0, local_anchor_ay: 0.0,
+      local_anchor_bx: 0.0, local_anchor_by: 0.0,
+      enable_spring: false, hertz: 0.0, damping_ratio: 0.0, target_angle: 0.0,
+      enable_limit: false, lower_angle: 0.0, upper_angle: 0.0,
+      enable_motor: false, motor_speed: 0.0, max_motor_torque: 0.0
 Physics::Joints.add_joint w, j
 
-j = Physics::Joints.create_prismatic_joint w,
-  body_a: ba, body_b: bb,
-  local_axis_ax: 1.0, local_axis_ay: 0.0,  # slide axis in body A's local space
-  enable_spring: false, hertz: 0.0, damping_ratio: 0.0,
-  enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
-  enable_motor: false, motor_speed: 0.0, max_motor_force: 0.0
+j = Physics::Joints.create_prismatic_joint body_a: ba, body_b: bb,
+      local_axis_ax: 1.0, local_axis_ay: 0.0,  # slide axis in body A's local space
+      enable_spring: false, hertz: 0.0, damping_ratio: 0.0,
+      enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
+      enable_motor: false, motor_speed: 0.0, max_motor_force: 0.0
 Physics::Joints.add_joint w, j
 
-j = Physics::Joints.create_weld_joint w,
-  body_a: ba, body_b: bb,
-  local_anchor_ax: 0.0, local_anchor_ay: 0.0,
-  local_anchor_bx: 0.0, local_anchor_by: 0.0,
-  linear_hertz: 0.0, linear_damping_ratio: 0.0,    # 0 = rigid
-  angular_hertz: 0.0, angular_damping_ratio: 0.0
+j = Physics::Joints.create_weld_joint body_a: ba, body_b: bb,
+      local_anchor_ax: 0.0, local_anchor_ay: 0.0,
+      local_anchor_bx: 0.0, local_anchor_by: 0.0,
+      linear_hertz: 0.0, linear_damping_ratio: 0.0,    # 0 = rigid
+      angular_hertz: 0.0, angular_damping_ratio: 0.0
 Physics::Joints.add_joint w, j
 
-j = Physics::Joints.create_wheel_joint w,
-  body_a: ba, body_b: bb,
-  local_axis_ax: 0.0, local_axis_ay: 1.0,  # suspension axis
-  enable_spring: true, hertz: 1.0, damping_ratio: 0.7,
-  enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
-  enable_motor: false, motor_speed: 0.0, max_motor_torque: 0.0
+j = Physics::Joints.create_wheel_joint body_a: ba, body_b: bb,
+      local_axis_ax: 0.0, local_axis_ay: 1.0,  # suspension axis
+      enable_spring: true, hertz: 1.0, damping_ratio: 0.7,
+      enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
+      enable_motor: false, motor_speed: 0.0, max_motor_torque: 0.0
 Physics::Joints.add_joint w, j
 
-j = Physics::Joints.create_motor_joint w,
-  body_a: ba, body_b: bb,
-  linear_hertz: 1.0, linear_damping_ratio: 1.0,
-  angular_hertz: 1.0, angular_damping_ratio: 1.0,
-  max_spring_force: 0.0, max_spring_torque: 0.0
+j = Physics::Joints.create_motor_joint body_a: ba, body_b: bb,
+      linear_hertz: 1.0, linear_damping_ratio: 1.0,
+      angular_hertz: 1.0, angular_damping_ratio: 1.0,
+      max_spring_force: 0.0, max_spring_torque: 0.0
 Physics::Joints.add_joint w, j
 ```
 
