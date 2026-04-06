@@ -28,19 +28,27 @@ module StressTest
       end
     end
 
-    # Scenario 0: Mass Spawn (300 bodies in tight area
+    # Scenario 0: Mass Spawn (300 bodies in a tight area)
     def setup_mass_spawn args
       w = Physics.create_world
       args.state.world = w
 
       floor = Physics.create_body w, x: 640, y: -10, type: :static
-      Physics.create_box w, body_id: floor[:id], w: 1400, h: 40, friction: 0.8
+      Physics.add_body w, floor
+      _s = Physics.create_box w, body_id: floor[:id], w: 1400, h: 40, friction: 0.8
+      Physics.add_shape w, _s
       lw = Physics.create_body w, x: -10, y: 360, type: :static
-      Physics.create_box w, body_id: lw[:id], w: 40, h: 800, friction: 0.5
+      Physics.add_body w, lw
+      _s = Physics.create_box w, body_id: lw[:id], w: 40, h: 800, friction: 0.5
+      Physics.add_shape w, _s
       rw = Physics.create_body w, x: 1290, y: 360, type: :static
-      Physics.create_box w, body_id: rw[:id], w: 40, h: 800, friction: 0.5
+      Physics.add_body w, rw
+      _s = Physics.create_box w, body_id: rw[:id], w: 40, h: 800, friction: 0.5
+      Physics.add_shape w, _s
       ceil = Physics.create_body w, x: 640, y: 730, type: :static
-      Physics.create_box w, body_id: ceil[:id], w: 1400, h: 40, friction: 0.5
+      Physics.add_body w, ceil
+      _s = Physics.create_box w, body_id: ceil[:id], w: 1400, h: 40, friction: 0.5
+      Physics.add_shape w, _s
 
       i = 0
       while i < 300
@@ -49,18 +57,23 @@ module StressTest
         kind = i % 3
         if kind == 0
           b = Physics.create_body w, x: x, y: y, type: :dynamic
-          Physics.create_circle w, body_id: b[:id], radius: 5 + rand(10), density: 0.5, friction: 0.6, restitution: 0.3
+          Physics.add_body w, b
+          _s = Physics.create_circle w, body_id: b[:id], radius: 5 + rand(10), density: 0.5, friction: 0.6, restitution: 0.3
+          Physics.add_shape w, _s
         elsif kind == 1
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
-          Physics.create_box w, body_id: b[:id], w: 8 + rand(14), h: 8 + rand(14), density: 0.8, friction: 0.6, restitution: 0.2
+          Physics.add_body w, b
+          _s = Physics.create_box w, body_id: b[:id], w: 8 + rand(14), h: 8 + rand(14), density: 0.8, friction: 0.6, restitution: 0.2
+          Physics.add_shape w, _s
         else
           hl = 6 + rand(10); r = 3 + rand(5)
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
-          Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
+          Physics.add_body w, b
+          _s = Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
+          Physics.add_shape w, _s
         end
         i += 1
       end
-      Physics.transform_shapes w
     end
 
     # Scenario 1: Churn (spawn/destroy cycle)
@@ -68,19 +81,24 @@ module StressTest
       w = Physics.create_world
       args.state.world = w
       make_walls w
-      Physics.transform_shapes w
     end
 
     def make_walls w
       floor = Physics.create_body w, x: 640, y: -10, type: :static
-      Physics.create_box w, body_id: floor[:id], w: 1400, h: 40, friction: 0.8
+      Physics.add_body w, floor
+      _s = Physics.create_box w, body_id: floor[:id], w: 1400, h: 40, friction: 0.8
+      Physics.add_shape w, _s
       lw = Physics.create_body w, x: -10, y: 360, type: :static
-      Physics.create_box w, body_id: lw[:id], w: 40, h: 800, friction: 0.5
+      Physics.add_body w, lw
+      _s = Physics.create_box w, body_id: lw[:id], w: 40, h: 800, friction: 0.5
+      Physics.add_shape w, _s
       rw = Physics.create_body w, x: 1290, y: 360, type: :static
-      Physics.create_box w, body_id: rw[:id], w: 40, h: 800, friction: 0.5
+      Physics.add_body w, rw
+      _s = Physics.create_box w, body_id: rw[:id], w: 40, h: 800, friction: 0.5
+      Physics.add_shape w, _s
     end
 
-    # Scenario 2: GC Hammer (modest bodies + forced allocation pressure)
+    # Scenario 2: GC Hammer
     def setup_gc_hammer args
       w = Physics.create_world
       args.state.world = w
@@ -93,18 +111,23 @@ module StressTest
         kind = i % 3
         if kind == 0
           b = Physics.create_body w, x: x, y: y, type: :dynamic
-          Physics.create_circle w, body_id: b[:id], radius: 8 + rand(12), density: 0.5, friction: 0.6, restitution: 0.3
+          Physics.add_body w, b
+          _s = Physics.create_circle w, body_id: b[:id], radius: 8 + rand(12), density: 0.5, friction: 0.6, restitution: 0.3
+          Physics.add_shape w, _s
         elsif kind == 1
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
-          Physics.create_box w, body_id: b[:id], w: 10 + rand(16), h: 10 + rand(16), density: 0.8, friction: 0.6, restitution: 0.2
+          Physics.add_body w, b
+          _s = Physics.create_box w, body_id: b[:id], w: 10 + rand(16), h: 10 + rand(16), density: 0.8, friction: 0.6, restitution: 0.2
+          Physics.add_shape w, _s
         else
           hl = 8 + rand(10); r = 4 + rand(5)
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
-          Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
+          Physics.add_body w, b
+          _s = Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
+          Physics.add_shape w, _s
         end
         i += 1
       end
-      Physics.transform_shapes w
     end
 
     #Scenario 3: Decomposed Step (mass spawn + GC between phases)
@@ -177,7 +200,6 @@ module StressTest
         w = Physics.create_world
         args.state.world = w
         make_walls w
-        Physics.transform_shapes w
         $gtk.log "Churn: world reset at frame #{args.state.stress_frame}"
         return
       end
@@ -190,14 +212,20 @@ module StressTest
         kind = rand 3
         if kind == 0
           b = Physics.create_body w, x: x, y: y, type: :dynamic
-          Physics.create_circle w, body_id: b[:id], radius: 6 + rand(10), density: 0.5, friction: 0.6, restitution: 0.3
+          Physics.add_body w, b
+          _s = Physics.create_circle w, body_id: b[:id], radius: 6 + rand(10), density: 0.5, friction: 0.6, restitution: 0.3
+          Physics.add_shape w, _s
         elsif kind == 1
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic
-          Physics.create_box w, body_id: b[:id], w: 8 + rand(14), h: 8 + rand(14), density: 0.8, friction: 0.6, restitution: 0.2
+          Physics.add_body w, b
+          _s = Physics.create_box w, body_id: b[:id], w: 8 + rand(14), h: 8 + rand(14), density: 0.8, friction: 0.6, restitution: 0.2
+          Physics.add_shape w, _s
         else
           hl = 6 + rand(8); r = 3 + rand(5)
           b = Physics.create_body w, x: x, y: y, angle: rand - 0.5, type: :dynamic, angular_damping: 0.5
-          Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
+          Physics.add_body w, b
+          _s = Physics.create_capsule w, body_id: b[:id], x1: -hl, y1: 0, x2: hl, y2: 0, radius: r, density: 0.6, friction: 0.6, restitution: 0.2
+          Physics.add_shape w, _s
         end
         i += 1
       end
@@ -205,7 +233,7 @@ module StressTest
       Physics.tick w
     end
 
-    # Decomposed Step: Physics.step broken apart with alloc bursts between phases
+    # Decomposed Step: Physics.tick broken apart with alloc bursts between phases
     def decomposed_step w
       dt = w[:dt]
       sub_steps = w[:sub_steps]
@@ -315,7 +343,7 @@ module StressTest
       end
     end
 
-    # Rendering (reuses sandbox pattern)
+    # Rendering
     def render_stress args, w
       deg = 180.0 / Math::PI
       shapes = w[:shapes]; i = 0

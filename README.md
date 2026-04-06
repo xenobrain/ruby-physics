@@ -32,17 +32,16 @@ require_relative 'physics.rb'
 ```ruby
 def boot args
   w = Physics.create_world
-  
+
   # static ground
   ground = Physics.create_body w, x: 640, y: 10, type: :static
-  Physics.create_box w, body_id: ground[:id], w: 1280, h: 20, friction: 0.8
+  Physics.add_body w, ground
+  Physics.add_shape w, Physics.create_box(w, body_id: ground[:id], w: 1280, h: 20, friction: 0.8)
 
   # dynamic body
   ball = Physics.create_body w, x: 640, y: 400, type: :dynamic
-  Physics.create_circle w, body_id: ball[:id], radius: 20, density: 1.0
-
-  # initial transform (required before first step)
-  Physics.transform_shapes w
+  Physics.add_body w, ball
+  Physics.add_shape w, Physics.create_circle(w, body_id: ball[:id], radius: 20, density: 1.0)
 
   args.state.world = w
   args.state.ball = ball
@@ -117,6 +116,13 @@ b = Physics.create_body w,
   gravity_scale: 1.0,
   linear_damping: 0.0,
   angular_damping: 0.0
+Physics.add_body w, b
+```
+
+Bodies are not part of the simulation until added to the world with `add_body`. Remove with `remove_body`, which also removes all attached shapes and connected joints:
+
+```ruby
+Physics.remove_body w, b
 ```
 
 **Body properties** (read/write on the returned hash):
@@ -134,37 +140,48 @@ b = Physics.create_body w,
 
 ### Shapes
 
-All shapes are attached to a body via `body_id`. Dynamic bodies automatically compute mass and inertia from shape density and geometry. All shape creation methods accept optional `layer:` and `mask:` parameters for [collision filtering](#collision-filtering).
+All shapes are attached to a body via `body_id`. Dynamic bodies automatically compute mass and inertia from shape density and geometry when the shape is added to the world. All shape creation methods accept optional `layer:` and `mask:` parameters for [collision filtering](#collision-filtering).
+
+Shapes are not part of the simulation until added with `Physics.add_shape`. Adding a shape also transforms it to world space automatically. Remove a shape individually with `remove_shape`, which subtracts its mass contribution from the parent body:
 
 ```ruby
-Physics.create_circle w,
+Physics.remove_shape w, s
+```
+
+```ruby
+s = Physics.create_circle w,
   body_id: b[:id],
   radius: 20.0,
   offset_x: 0.0, offset_y: 0.0,  # local offset from body center
   density: 1.0, friction: 0.6, restitution: 0.0,
   layer: Physics::LAYERS[:player], mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
+Physics.add_shape w, s
 
-Physics.create_box w,
+s = Physics.create_box w,
   body_id: b[:id],
   w: 40, h: 20,
   density: 1.0, friction: 0.6, restitution: 0.0,
   layer: Physics::LAYERS[:terrain]  # omit mask: to collide with everything
+Physics.add_shape w, s
 
-Physics.create_polygon w,
+s = Physics.create_polygon w,
   body_id: b[:id],
   vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
   density: 1.0, friction: 0.6, restitution: 0.0
+Physics.add_shape w, s
 
-Physics.create_capsule w,
+s = Physics.create_capsule w,
   body_id: b[:id],
   x1: -20, y1: 0, x2: 20, y2: 0,  # local endpoints
   radius: 8.0,
   density: 1.0, friction: 0.6, restitution: 0.0
+Physics.add_shape w, s
 
-Physics.create_segment w,
+s = Physics.create_segment w,
   body_id: b[:id],
   x1: -100, y1: 0, x2: 100, y2: 0,  # local endpoints (zero-thickness line)
   friction: 0.6, restitution: 0.0
+Physics.add_shape w, s
 ```
 
 Both `layer:` and `mask:` are optional — omit either to collide with everything.
@@ -211,14 +228,16 @@ COLLIDES_WITH_ALL    = Physics::LAYERS[:terrain] | Physics::LAYERS[:player] | Ph
 COLLIDES_WITH_GROUND = Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
 
 # Player collides with terrain and enemies, but not projectiles
-Physics.create_circle w, body_id: b[:id], radius: 10,
+s = Physics.create_circle w, body_id: b[:id], radius: 10,
   layer: Physics::LAYERS[:player],
   mask: COLLIDES_WITH_GROUND
+Physics.add_shape w, s
 
 # Projectile collides with terrain and enemies only
-Physics.create_circle w, body_id: b[:id], radius: 4,
+s = Physics.create_circle w, body_id: b[:id], radius: 4,
   layer: Physics::LAYERS[:projectile],
   mask: Physics::LAYERS[:terrain] | Physics::LAYERS[:enemy]
+Physics.add_shape w, s
 ```
 
 Filtering is checked before narrowphase collision detection, so filtered-out pairs have zero performance cost. You can also modify `layer` and `mask` on existing shapes at any time:
@@ -230,10 +249,14 @@ shape[:mask] = 0x0000          # collide with nothing
 
 ### Joints
 
-All joints connect two bodies and support optional springs, motors, and limits.
+All joints connect two bodies and support optional springs, motors, and limits. Like bodies and shapes, joints are not part of the simulation until added with `Physics::Joints.add_joint`. Remove with `remove_joint`:
 
 ```ruby
-Physics::Joints.create_distance_joint w,
+Physics::Joints.remove_joint w, j
+```
+
+```ruby
+j = Physics::Joints.create_distance_joint w,
   body_a_id: ba[:id], body_b_id: bb[:id],
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
@@ -241,41 +264,47 @@ Physics::Joints.create_distance_joint w,
   enable_spring: false, hertz: 0.0, damping_ratio: 0.0,
   enable_limit: false, min_length: nil, max_length: nil,
   enable_motor: false, motor_speed: 0.0, max_motor_force: 0.0
+Physics::Joints.add_joint w, j
 
-Physics::Joints.create_revolute_joint w,
+j = Physics::Joints.create_revolute_joint w,
   body_a_id: ba[:id], body_b_id: bb[:id],
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
   enable_spring: false, hertz: 0.0, damping_ratio: 0.0, target_angle: 0.0,
   enable_limit: false, lower_angle: 0.0, upper_angle: 0.0,
   enable_motor: false, motor_speed: 0.0, max_motor_torque: 0.0
+Physics::Joints.add_joint w, j
 
-Physics::Joints.create_prismatic_joint w,
+j = Physics::Joints.create_prismatic_joint w,
   body_a_id: ba[:id], body_b_id: bb[:id],
   local_axis_ax: 1.0, local_axis_ay: 0.0,  # slide axis in body A's local space
   enable_spring: false, hertz: 0.0, damping_ratio: 0.0,
   enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
   enable_motor: false, motor_speed: 0.0, max_motor_force: 0.0
+Physics::Joints.add_joint w, j
 
-Physics::Joints.create_weld_joint w,
+j = Physics::Joints.create_weld_joint w,
   body_a_id: ba[:id], body_b_id: bb[:id],
   local_anchor_ax: 0.0, local_anchor_ay: 0.0,
   local_anchor_bx: 0.0, local_anchor_by: 0.0,
   linear_hertz: 0.0, linear_damping_ratio: 0.0,    # 0 = rigid
   angular_hertz: 0.0, angular_damping_ratio: 0.0
+Physics::Joints.add_joint w, j
 
-Physics::Joints.create_wheel_joint w,
+j = Physics::Joints.create_wheel_joint w,
   body_a_id: ba[:id], body_b_id: bb[:id],
   local_axis_ax: 0.0, local_axis_ay: 1.0,  # suspension axis
   enable_spring: true, hertz: 1.0, damping_ratio: 0.7,
   enable_limit: false, lower_translation: 0.0, upper_translation: 0.0,
   enable_motor: false, motor_speed: 0.0, max_motor_torque: 0.0
+Physics::Joints.add_joint w, j
 
-Physics::Joints.create_motor_joint w,
+j = Physics::Joints.create_motor_joint w,
   body_a_id: ba[:id], body_b_id: bb[:id],
   linear_hertz: 1.0, linear_damping_ratio: 1.0,
   angular_hertz: 1.0, angular_damping_ratio: 1.0,
   max_spring_force: 0.0, max_spring_torque: 0.0
+Physics::Joints.add_joint w, j
 ```
 
 ### Contact Callbacks
@@ -365,14 +394,6 @@ Physics::DebugDraw.draw_contacts w, args.outputs    # contact points and normals
 Physics::DebugDraw.draw_aabbs w, args.outputs        # bounding boxes
 Physics::DebugDraw.draw_sleep_state w, args.outputs  # "z" labels on sleeping bodies
 ```
-
-### Transform
-
-```ruby
-Physics.transform_shapes w
-```
-
-Updates world-space vertices and AABBs for all shapes. Called automatically inside `Physics.tick`, but must be called manually after creating shapes and before the first step.
 
 ## Demos
 

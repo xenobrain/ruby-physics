@@ -134,12 +134,17 @@ module Physics
         on_contact_persist: nil,
         on_contact_end: nil
       }
-      world[:bodies] << body
-      Islands.create_island world, body if type == :dynamic
       body
     end
 
-    def create_circle world, body_id:, radius:, offset_x: 0.0, offset_y: 0.0, density: 1.0, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def add_body world, body
+      body[:id] = world[:bodies].length
+      world[:bodies] << body
+      Islands.create_island world, body if body[:type] == :dynamic
+      body
+    end
+
+    def create_circle world, body_id:, radius:, offset_x: 0.0, offset_y: 0.0, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       r = radius.to_f
       id = world[:next_shape_id]
       world[:next_shape_id] = id + 1
@@ -152,32 +157,27 @@ module Physics
         offset_y: offset_y.to_f,
         friction: friction.to_f,
         restitution: restitution.to_f,
+        rolling_resistance: rolling_resistance.to_f,
+        tangent_speed: tangent_speed.to_f,
         density: density.to_f,
         layer: layer, mask: mask,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
         proxy_id: nil, dyn_proxy_id: nil,
         fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
       }
-      world[:shapes] << shape
-
-      body = find_body world, body_id
-      if body[:type] == :dynamic
-        area = PI * r * r
-        mass = density.to_f * area
-        inertia = 0.5 * mass * r * r
-        ox = offset_x.to_f
-        oy = offset_y.to_f
-        inertia += mass * (ox * ox + oy * oy) if ox != 0.0 || oy != 0.0
-        body[:mass] += mass
-        body[:inertia] += inertia
-        body[:inv_mass] = 1.0 / body[:mass]
-        body[:inv_inertia] = 1.0 / body[:inertia]
-      end
+      area = PI * r * r
+      mass = density.to_f * area
+      inertia = 0.5 * mass * r * r
+      ox = offset_x.to_f
+      oy = offset_y.to_f
+      inertia += mass * (ox * ox + oy * oy) if ox != 0.0 || oy != 0.0
+      shape[:mass] = mass
+      shape[:inertia] = inertia
 
       shape
     end
 
-    def create_polygon world, body_id:, vertices:, density: 1.0, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_polygon world, body_id:, vertices:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       n = vertices.length / 2
       return nil if n < 3
 
@@ -297,36 +297,30 @@ module Physics
         radius: 0.0,
         friction: friction.to_f,
         restitution: restitution.to_f,
+        rolling_resistance: rolling_resistance.to_f,
+        tangent_speed: tangent_speed.to_f,
         density: density.to_f,
         layer: layer, mask: mask,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
         proxy_id: nil, dyn_proxy_id: nil,
         fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
       }
-      world[:shapes] << shape
-
-      body = find_body world, body_id
-      if body[:type] == :dynamic
-        mass = density.to_f * area.abs
-        inertia = (moi - area * (cx * cx + cy * cy)) * density.to_f
-        inertia = inertia.abs
-        body[:mass] += mass
-        body[:inertia] += inertia
-        body[:inv_mass] = 1.0 / body[:mass]
-        body[:inv_inertia] = 1.0 / body[:inertia]
-      end
+      mass = density.to_f * area.abs
+      inertia = ((moi - area * (cx * cx + cy * cy)) * density.to_f).abs
+      shape[:mass] = mass
+      shape[:inertia] = inertia
 
       shape
     end
 
-    def create_box world, body_id:, w:, h:, density: 1.0, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_box world, body_id:, w:, h:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       hw = w.to_f * 0.5
       hh = h.to_f * 0.5
       verts = [-hw, -hh, hw, -hh, hw, hh, -hw, hh]
-      create_polygon world, body_id: body_id, vertices: verts, density: density, friction: friction, restitution: restitution, layer: layer, mask: mask
+      create_polygon world, body_id: body_id, vertices: verts, density: density, friction: friction, restitution: restitution, rolling_resistance: rolling_resistance, tangent_speed: tangent_speed, layer: layer, mask: mask
     end
 
-    def create_capsule world, body_id:, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0, radius:, density: 1.0, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_capsule world, body_id:, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0, radius:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       r = radius.to_f
       ax = x1.to_f; ay = y1.to_f
       bx = x2.to_f; by = y2.to_f
@@ -336,50 +330,176 @@ module Physics
       shape = {
         id: id, type: :capsule, body_id: body_id,
         x1: ax, y1: ay, x2: bx, y2: by, radius: r,
-        friction: friction.to_f, restitution: restitution.to_f, density: density.to_f,
+        friction: friction.to_f, restitution: restitution.to_f,
+        rolling_resistance: rolling_resistance.to_f, tangent_speed: tangent_speed.to_f,
+        density: density.to_f,
         layer: layer, mask: mask,
         wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
         proxy_id: nil, dyn_proxy_id: nil,
         fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
       }
-      world[:shapes] << shape
-
-      body = find_body world, body_id
-      if body[:type] == :dynamic
-        dx = bx - ax; dy = by - ay
-        length = Math.sqrt(dx * dx + dy * dy)
-        rect_area = length * 2.0 * r
-        circle_area = PI * r * r
-        mass = density.to_f * (rect_area + circle_area)
-        m_rect = density.to_f * rect_area
-        m_circ = density.to_f * circle_area
-        inertia = (1.0 / 12.0) * m_rect * (length * length + 4.0 * r * r)
-        inertia += 0.5 * m_circ * r * r + m_circ * (length * 0.5) * (length * 0.5)
-        body[:mass] += mass
-        body[:inertia] += inertia
-        body[:inv_mass] = 1.0 / body[:mass]
-        body[:inv_inertia] = 1.0 / body[:inertia]
-      end
+      dx = bx - ax; dy = by - ay
+      length = Math.sqrt(dx * dx + dy * dy)
+      rect_area = length * 2.0 * r
+      circle_area = PI * r * r
+      mass = density.to_f * (rect_area + circle_area)
+      m_rect = density.to_f * rect_area
+      m_circ = density.to_f * circle_area
+      inertia = (1.0 / 12.0) * m_rect * (length * length + 4.0 * r * r)
+      inertia += 0.5 * m_circ * r * r + m_circ * (length * 0.5) * (length * 0.5)
+      shape[:mass] = mass
+      shape[:inertia] = inertia
 
       shape
     end
 
-    def create_segment world, body_id:, x1:, y1:, x2:, y2:, friction: 0.6, restitution: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_segment world, body_id:, x1:, y1:, x2:, y2:, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
       id = world[:next_shape_id]
       world[:next_shape_id] = id + 1
       shape = {
         id: id, type: :segment, body_id: body_id,
         x1: x1.to_f, y1: y1.to_f, x2: x2.to_f, y2: y2.to_f, radius: 0.0,
-        friction: friction.to_f, restitution: restitution.to_f, density: 0.0,
+        friction: friction.to_f, restitution: restitution.to_f,
+        rolling_resistance: rolling_resistance.to_f, tangent_speed: tangent_speed.to_f,
+        density: 0.0,
         layer: layer, mask: mask,
         wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
         proxy_id: nil, dyn_proxy_id: nil,
         fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
       }
-      world[:shapes] << shape
+      shape[:mass] = 0.0
+      shape[:inertia] = 0.0
       shape
+    end
+
+    def add_shape world, shape
+      shape[:id] = world[:shapes].length
+      world[:shapes] << shape
+      body = find_body world, shape[:body_id]
+      if body[:type] == :dynamic
+        body[:mass] += shape[:mass]
+        body[:inertia] += shape[:inertia]
+        body[:inv_mass] = 1.0 / body[:mass]
+        body[:inv_inertia] = 1.0 / body[:inertia]
+      end
+      transform_shape shape, body
+      shape
+    end
+
+    def transform_shape shape, body
+      cos_a = Math.cos body[:angle]; sin_a = Math.sin body[:angle]
+      bx = body[:x]; by = body[:y]
+      t = shape[:type]
+      if t == :polygon
+        verts = shape[:vertices]; norms = shape[:normals]; count = shape[:count]
+        wv = Array.new(count * 2, 0.0)
+        wn = Array.new(count * 2, 0.0)
+        shape[:world_vertices] = wv; shape[:world_normals] = wn
+        j = 0
+        while j < count
+          j2 = j * 2
+          lx = verts[j2]; ly = verts[j2 + 1]
+          wv[j2] = bx + cos_a * lx - sin_a * ly
+          wv[j2 + 1] = by + sin_a * lx + cos_a * ly
+          lnx = norms[j2]; lny = norms[j2 + 1]
+          wn[j2] = cos_a * lnx - sin_a * lny
+          wn[j2 + 1] = sin_a * lnx + cos_a * lny
+          j += 1
+        end
+      elsif t == :capsule || t == :segment
+        lx1 = shape[:x1]; ly1 = shape[:y1]; lx2 = shape[:x2]; ly2 = shape[:y2]
+        shape[:wx1] = bx + cos_a * lx1 - sin_a * ly1
+        shape[:wy1] = by + sin_a * lx1 + cos_a * ly1
+        shape[:wx2] = bx + cos_a * lx2 - sin_a * ly2
+        shape[:wy2] = by + sin_a * lx2 + cos_a * ly2
+      end
+    end
+
+    def remove_shape world, shape
+      bp = world[:broadphase]
+      dt = bp[:dynamic_tree]
+      shape[:proxy_id] = nil
+      if shape[:dyn_proxy_id] && dt
+        tree_destroy_proxy dt, shape[:dyn_proxy_id]
+        shape[:dyn_proxy_id] = nil
+      end
+      bp[:static_dirty] = true
+
+      sid = shape[:id]
+      world[:pairs].delete_if do |_k, p|
+        if p[:shape_a_id] == sid || p[:shape_b_id] == sid
+          Islands.unlink_contact world, p if p[:touching]
+          pts = p[:manifold][:points]
+          while pts.length > 0; CONTACT_POOL << pts.pop; end
+          PAIR_POOL << p
+          true
+        end
+      end
+
+      body = find_body world, shape[:body_id]
+      if body[:type] == :dynamic
+        body[:mass] -= shape[:mass]
+        body[:inertia] -= shape[:inertia]
+        if body[:mass] > 0.0
+          body[:inv_mass] = 1.0 / body[:mass]
+          body[:inv_inertia] = 1.0 / body[:inertia]
+        else
+          body[:inv_mass] = 0.0; body[:inv_inertia] = 0.0
+        end
+      end
+
+      shapes = world[:shapes]
+      idx = shape[:id]
+      last_idx = shapes.length - 1
+      if idx != last_idx
+        moved = shapes[last_idx]
+        shapes[idx] = moved
+        moved[:id] = idx
+        fix_shape_references world, last_idx, idx
+      end
+      shapes.pop
+      shape
+    end
+
+    def remove_body world, body
+      bid = body[:id]
+
+      shapes = world[:shapes]
+      i = shapes.length - 1
+      while i >= 0
+        remove_shape world, shapes[i] if shapes[i][:body_id] == bid
+        i -= 1
+      end
+
+      joints = world[:joints]
+      i = joints.length - 1
+      while i >= 0
+        j = joints[i]
+        Joints.remove_joint(world, j) if j[:body_a_id] == bid || j[:body_b_id] == bid
+        i -= 1
+      end
+
+      if body[:island_id] >= 0
+        island = world[:islands][body[:island_id]]
+        if island
+          island[:body_ids].delete bid
+          world[:islands].delete(island[:id]) if island[:body_ids].empty?
+        end
+      end
+
+      bodies = world[:bodies]
+      idx = body[:id]
+      last_idx = bodies.length - 1
+      if idx != last_idx
+        moved = bodies[last_idx]
+        bodies[idx] = moved
+        moved[:id] = idx
+        fix_body_references world, last_idx, idx
+      end
+      bodies.pop
+      body
     end
 
     def find_body world, body_id
@@ -388,6 +508,71 @@ module Physics
 
     def find_shape world, shape_id
       world[:shapes][shape_id]
+    end
+
+    def fix_shape_references world, old_id, new_id
+      bp = world[:broadphase]
+      dt = bp[:dynamic_tree]
+      moved = world[:shapes][new_id]
+      if moved[:dyn_proxy_id] && dt
+        node = dt[:nodes][moved[:dyn_proxy_id]]
+        node[:user_data] = new_id if node
+      end
+      bp[:static_dirty] = true
+
+      pairs = world[:pairs]
+      rekey = nil
+      pairs.each do |key, p|
+        changed = false
+        if p[:shape_a_id] == old_id
+          p[:shape_a_id] = new_id; changed = true
+        end
+        if p[:shape_b_id] == old_id
+          p[:shape_b_id] = new_id; changed = true
+        end
+        if changed
+          rekey ||= []
+          rekey << key
+        end
+      end
+      if rekey
+        i = 0
+        while i < rekey.length
+          p = pairs.delete rekey[i]; i += 1
+          min_id = p[:shape_a_id] < p[:shape_b_id] ? p[:shape_a_id] : p[:shape_b_id]
+          max_id = p[:shape_a_id] < p[:shape_b_id] ? p[:shape_b_id] : p[:shape_a_id]
+          pairs[(min_id << 16) | max_id] = p
+        end
+      end
+    end
+
+    def fix_body_references world, old_id, new_id
+      shapes = world[:shapes]
+      i = 0
+      while i < shapes.length
+        shapes[i][:body_id] = new_id if shapes[i][:body_id] == old_id
+        i += 1
+      end
+
+      joints = world[:joints]
+      i = 0
+      while i < joints.length
+        j = joints[i]
+        j[:body_a_id] = new_id if j[:body_a_id] == old_id
+        j[:body_b_id] = new_id if j[:body_b_id] == old_id
+        i += 1
+      end
+
+      world[:pairs].each_value do |p|
+        p[:body_a_id] = new_id if p[:body_a_id] == old_id
+        p[:body_b_id] = new_id if p[:body_b_id] == old_id
+      end
+
+      world[:islands].each_value do |island|
+        bids = island[:body_ids]
+        idx = bids.index old_id
+        bids[idx] = new_id if idx
+      end
     end
 
     def tick world
@@ -751,6 +936,7 @@ module Physics
     end
 
     # Spatial Hash Broadphase
+
     def spatial_hash_broadphase world, shapes, bp, n, candidates, seen
       shift = bp[:shift]; sc = bp[:static_cells]; dc = bp[:dynamic_cells]; pool = bp[:pool]
       if bp[:static_dirty] || bp[:static_shape_count] != n
@@ -806,6 +992,7 @@ module Physics
     end
 
     # Dynamic AABB Tree Broadphase
+
     def tree_create cap = 16
       nodes = Array.new(cap)
       i = 0
@@ -1266,6 +1453,14 @@ module Physics
             while old_points.length > 0; CONTACT_POOL << old_points.pop; end
             old_m[:normal_x] = manifold[:normal_x]; old_m[:normal_y] = manifold[:normal_y]
             old_m[:friction] = manifold[:friction]; old_m[:restitution] = manifold[:restitution]
+            rr_a = sa[:rolling_resistance]; rr_b = sb[:rolling_resistance]
+            if rr_a > 0.0 || rr_b > 0.0
+              max_r = sa[:radius] > sb[:radius] ? sa[:radius] : sb[:radius]
+              pair[:rolling_resistance] = (rr_a > rr_b ? rr_a : rr_b) * max_r
+            else
+              pair[:rolling_resistance] = 0.0
+            end
+            pair[:tangent_speed] = sa[:tangent_speed] + sb[:tangent_speed]
             pi = 0
             while pi < new_points.length; old_points << new_points[pi]; pi += 1; end
             new_points.clear
@@ -1309,6 +1504,14 @@ module Physics
             end
           end
           s1 = flip ? sb : sa; s2 = flip ? sa : sb
+          rr_a = sa[:rolling_resistance]; rr_b = sb[:rolling_resistance]
+          if rr_a > 0.0 || rr_b > 0.0
+            max_r = sa[:radius] > sb[:radius] ? sa[:radius] : sb[:radius]
+            new_rr = (rr_a > rr_b ? rr_a : rr_b) * max_r
+          else
+            new_rr = 0.0
+          end
+          new_ts = sa[:tangent_speed] + sb[:tangent_speed]
           new_pair = PAIR_POOL.pop
           if new_pair
             new_pair[:shape_a_id] = s1[:id]; new_pair[:shape_b_id] = s2[:id]
@@ -1321,6 +1524,9 @@ module Physics
             src_pts.clear
             new_pair[:stale] = false
             new_pair[:touching] = true
+            new_pair[:rolling_resistance] = new_rr
+            new_pair[:rolling_impulse] = 0.0
+            new_pair[:tangent_speed] = new_ts
           else
             nm_points = []
             src_pts = manifold[:points]; spi = 0
@@ -1331,7 +1537,9 @@ module Physics
                          manifold: { normal_x: new_nx, normal_y: new_ny,
                                      friction: new_fr, restitution: new_re,
                                      points: nm_points },
-                         stale: false, touching: true }
+                         stale: false, touching: true,
+                         rolling_resistance: new_rr, rolling_impulse: 0.0,
+                         tangent_speed: new_ts }
           end
           pairs[key] = new_pair
           Islands.link_contact world, new_pair
@@ -1539,6 +1747,7 @@ module Collide
       result[0] = best_sep; result[1] = best_idx
     end
 
+    # clip_polygons — Chipmunk-style symmetric edge clipping
     def clip_polygons va, na, ca, ra, vb, nb, cb, rb, edge_a, edge_b, flip
       if flip
         v1 = vb; n1 = nb; c1 = cb; r1 = rb
@@ -1955,6 +2164,10 @@ module Solver
         end
         pair[:softness] = softness
 
+        # Rolling resistance preparation
+        k_roll = ba[:inv_inertia] + bb[:inv_inertia]
+        pair[:rolling_mass] = k_roll > 0.0 ? 1.0 / k_roll : 0.0
+
         nx = manifold[:normal_x]; ny = manifold[:normal_y]
         tx = ny; ty = -nx
         ma = ba[:inv_mass]; ia = ba[:inv_inertia]
@@ -2008,6 +2221,12 @@ module Solver
           wa -= ia * (rax * py - ray * px); vax -= ma * px; vay -= ma * py
           wb += ib * (rbx * py - rby * px); vbx += mb * px; vby += mb * py
         end
+        # Rolling resistance warm-start
+        ri = pair[:rolling_impulse]
+        if ri && ri != 0.0
+          wa -= ia * ri
+          wb += ib * ri
+        end
         if ba[:type] == :dynamic
           if vax != vax then vax = 0.0; vay = 0.0; wa = 0.0 end
           ba[:vx] = vax; ba[:vy] = vay; ba[:w] = wa
@@ -2034,6 +2253,7 @@ module Solver
         vbx = bb[:vx]; vby = bb[:vy]; wb = bb[:w]
         nx = manifold[:normal_x]; ny = manifold[:normal_y]
         tx = ny; ty = -nx; friction = manifold[:friction]
+        ts = pair[:tangent_speed] || 0.0
         dpx = bb[:dpx] - ba[:dpx]; dpy = bb[:dpy] - ba[:dpy]
         points = manifold[:points]; total_normal_impulse = 0.0
         pi = 0
@@ -2077,7 +2297,7 @@ module Solver
           rbx = cp[:anchor_bx]; rby = cp[:anchor_by]
           vrax = vax - wa * ray; vray = vay + wa * rax
           vrbx = vbx - wb * rby; vrby = vby + wb * rbx
-          vt = (vrbx - vrax) * tx + (vrby - vray) * ty
+          vt = (vrbx - vrax) * tx + (vrby - vray) * ty - ts
           impulse = cp[:tangent_mass] * (-vt)
           max_friction = friction * cp[:normal_impulse]
           new_impulse = cp[:tangent_impulse] + impulse
@@ -2087,6 +2307,20 @@ module Solver
           px = impulse * tx; py = impulse * ty
           vax -= ma * px; vay -= ma * py; wa -= ia * (rax * py - ray * px)
           vbx += mb * px; vby += mb * py; wb += ib * (rbx * py - rby * px)
+        end
+        # Rolling resistance
+        rr = pair[:rolling_resistance]
+        if rr && rr > 0.0
+          delta_lambda = -(pair[:rolling_mass] || 0.0) * (wb - wa)
+          lambda = pair[:rolling_impulse] || 0.0
+          max_lambda = rr * total_normal_impulse
+          new_lambda = lambda + delta_lambda
+          new_lambda = -max_lambda if new_lambda < -max_lambda
+          new_lambda = max_lambda if new_lambda > max_lambda
+          pair[:rolling_impulse] = new_lambda
+          delta_lambda = new_lambda - lambda
+          wa -= ia * delta_lambda
+          wb += ib * delta_lambda
         end
         if ba[:type] == :dynamic
           if vax != vax then vax = 0.0; vay = 0.0; wa = 0.0 end
@@ -2186,8 +2420,6 @@ module Joints
         softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         inv_mass_a: 0.0, inv_mass_b: 0.0, inv_inertia_a: 0.0, inv_inertia_b: 0.0
       }
-      world[:joints] << j
-      Islands.merge_body_islands world, body_a_id, body_b_id
       j
     end
 
@@ -2223,8 +2455,6 @@ module Joints
         softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         inv_mass_a: 0.0, inv_mass_b: 0.0, inv_inertia_a: 0.0, inv_inertia_b: 0.0
       }
-      world[:joints] << j
-      Islands.merge_body_islands world, body_a_id, body_b_id
       j
     end
 
@@ -2266,8 +2496,6 @@ module Joints
         softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         inv_mass_a: 0.0, inv_mass_b: 0.0, inv_inertia_a: 0.0, inv_inertia_b: 0.0
       }
-      world[:joints] << j
-      Islands.merge_body_islands world, body_a_id, body_b_id
       j
     end
 
@@ -2299,8 +2527,6 @@ module Joints
         angular_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         inv_mass_a: 0.0, inv_mass_b: 0.0, inv_inertia_a: 0.0, inv_inertia_b: 0.0
       }
-      world[:joints] << j
-      Islands.merge_body_islands world, body_a_id, body_b_id
       j
     end
 
@@ -2338,8 +2564,6 @@ module Joints
         softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         inv_mass_a: 0.0, inv_mass_b: 0.0, inv_inertia_a: 0.0, inv_inertia_b: 0.0
       }
-      world[:joints] << j
-      Islands.merge_body_islands world, body_a_id, body_b_id
       j
     end
 
@@ -2384,9 +2608,37 @@ module Joints
         angular_softness: { bias_rate: 0.0, mass_scale: 0.0, impulse_scale: 0.0 },
         inv_mass_a: 0.0, inv_mass_b: 0.0, inv_inertia_a: 0.0, inv_inertia_b: 0.0
       }
-      world[:joints] << j
-      Islands.merge_body_islands world, body_a_id, body_b_id
       j
+    end
+
+    def add_joint world, joint
+      joint[:id] = world[:joints].length
+      world[:joints] << joint
+      Islands.merge_body_islands world, joint[:body_a_id], joint[:body_b_id]
+      joint
+    end
+
+    def remove_joint world, joint
+      ba = Physics.find_body world, joint[:body_a_id]
+      bb = Physics.find_body world, joint[:body_b_id]
+      iid = -1
+      iid = ba[:island_id] if ba && ba[:type] != :static && ba[:island_id] >= 0
+      iid = bb[:island_id] if iid < 0 && bb && bb[:type] != :static && bb[:island_id] >= 0
+      if iid >= 0
+        island = world[:islands][iid]
+        island[:constraint_remove_count] += 1 if island
+      end
+
+      joints = world[:joints]
+      idx = joint[:id]
+      last_idx = joints.length - 1
+      if idx != last_idx
+        moved = joints[last_idx]
+        joints[idx] = moved
+        moved[:id] = idx
+      end
+      joints.pop
+      joint
     end
 
     # Prepare
@@ -3387,7 +3639,7 @@ module Islands
         bids << bid
       end
       big[:constraint_remove_count] += small[:constraint_remove_count]
-      # wake sleeping bodies when merging awake + sleeping islands (Box2D: b2WakeSolverSet)
+      # wake sleeping bodies when merging awake + sleeping islands
       if !small[:sleeping] || !big[:sleeping]
         if big[:sleeping]
           ids = big[:body_ids]
@@ -3422,7 +3674,7 @@ module Islands
     def merge_body_islands world, body_a_id, body_b_id
       ba = Physics.find_body world, body_a_id
       bb = Physics.find_body world, body_b_id
-      # wake sleeping island if other body is awake (Box2D: b2LinkJoint)
+      # wake sleeping island if other body is awake
       if ba && bb
         a_id = ba[:type] != :static ? ba[:island_id] : -1
         b_id = bb[:type] != :static ? bb[:island_id] : -1
@@ -3447,7 +3699,7 @@ module Islands
       a_id = ba[:type] != :static ? ba[:island_id] : -1
       b_id = bb[:type] != :static ? bb[:island_id] : -1
       return if a_id < 0 && b_id < 0
-      # wake sleeping island on any confirmed touching contact (Box2D behavior)
+      # wake sleeping island on any confirmed touching contact
       if ba[:type] == :dynamic && !ba[:sleeping] && bb[:sleeping]
         wake_island world, b_id
       elsif bb[:type] == :dynamic && !bb[:sleeping] && ba[:sleeping]
