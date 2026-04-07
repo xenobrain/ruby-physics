@@ -14,6 +14,8 @@ convex decomposition, and procedural shattering
 - **Collision filtering** — per-shape bitmask layer/mask with named layer support
 - **Constraint solver** — TGS-Soft iterative solver with sub-stepping and warm-starting
 - **Joints** — distance, revolute, prismatic, weld, wheel, motor
+- **Queries** — point, AABB overlap, ray cast, shape cast
+- **Time of impact** — GJK distance, conservative advancement, bilateral TOI sweeps
 - **Broadphase** — dynamic AABB tree (default) or spatial hash grid, switchable at runtime
 - **Callbacks** — world-level and per-body contact callbacks (begin/persist/end)
 - **Sleeping** — island-based sleeping
@@ -195,8 +197,91 @@ Physics.set_inertia world, body, inertia
 
 ### Queries
 
+All query methods accept `layer:` and `mask:` keyword arguments for [collision filtering](#collision-filtering) (default `0xFFFF` = all).
+
+#### Point queries
+
 ```ruby
-body = Physics.body_at_point world, px, py  # returns first body at world point, or nil
+body  = Physics.body_at_point world, px, py                        # first body at point, or nil
+shape = Physics.shape_at_point world, px, py, layer: 0xFFFF, mask: 0xFFFF  # first shape, or nil
+
+# iterate all shapes containing a point — return true to continue, false to stop
+Physics.overlap_point(world, px, py, layer: 0xFFFF, mask: 0xFFFF) do |shape, body|
+  true
+end
+```
+
+#### AABB overlap
+
+```ruby
+Physics.overlap_aabb(world, x0, y0, x1, y1, layer: 0xFFFF, mask: 0xFFFF) do |shape, body|
+  true  # return false to stop
+end
+```
+
+#### Ray casting
+
+Rays are defined as `p(t) = origin + t * dir`, where `t` ranges from `0` to `max_fraction`.
+
+```ruby
+# closest hit — returns hash or nil
+hit = Physics.cast_ray_closest world, origin_x, origin_y, dir_x, dir_y, max_fraction
+# hit -> { shape:, body:, point_x:, point_y:, normal_x:, normal_y:, fraction: }
+
+# all hits — block returns new max_fraction (return fraction to clip, 0 to stop)
+Physics.cast_ray(world, ox, oy, dx, dy, max_fraction) do |shape, body, px, py, nx, ny, fraction|
+  fraction  # clip ray to this hit (closest-first behavior)
+end
+```
+
+#### Shape casting
+
+Sweep a shape along a translation vector and find the first obstacle hit.
+
+```ruby
+hit = Physics.cast_shape world, shape, body, tx, ty, max_fraction
+# hit -> { shape:, body:, fraction:, point_x:, point_y:, normal_x:, normal_y: } or nil
+```
+
+The swept shape must already be in the world (it needs transform data from `add_shape`).
+
+### Time of Impact
+
+Compute the earliest time two sweeping shapes first touch.
+
+```ruby
+C = Physics::Collide
+
+# build proxies from shapes already in the world
+proxy_a = C.make_proxy shape_a, body_a
+proxy_b = C.make_proxy shape_b, body_b
+
+# define sweeps (linear interpolation of position and angle)
+sweep_a = { c1x: 0, c1y: 0, c2x: 100, c2y: 0, a1: 0, a2: 0 }
+sweep_b = { c1x: 200, c1y: 0, c2x: 100, c2y: 0, a1: 0, a2: 0 }
+
+result = C.time_of_impact proxy_a, proxy_b, sweep_a, sweep_b, 1.0
+# result => { state:, fraction:, point_x:, point_y:, normal_x:, normal_y: }
+#   state: :hit, :separated, :overlapped, :failed
+```
+
+| Sweep key | Description |
+|-----------|-------------|
+| `c1x`, `c1y` | Center position at start |
+| `c2x`, `c2y` | Center position at end |
+| `a1`, `a2` | Angle at start / end |
+| `local_cx`, `local_cy` | Local center offset (optional, default 0) |
+
+Lower-level distance and shape-cast functions are also available:
+
+```ruby
+# GJK distance between two convex proxies
+result = C.shape_distance proxy_a, proxy_b
+# result => { distance:, point_ax:, point_ay:, point_bx:, point_by:, normal_x:, normal_y: }
+
+# sweep proxy_b along (tx,ty) toward stationary proxy_a
+result = C.shape_cast proxy_a, proxy_b, tx, ty, max_fraction
+# result => { hit:, fraction:, point_x:, point_y:, normal_x:, normal_y: } or nil
 ```
 
 ### Collision Filtering
@@ -395,6 +480,7 @@ The `app/main.rb` and `app/stress.rb` files contain several interactive demos:
 | Stress    | `Shift+S`    | Stress tests (mass spawn, churn, GC, decomposed)     |
 | Callbacks | `Shift+C`    | Visual callback demo (begin/persist/end effects)     |
 | Benchmark | `Shift+B`    | Broadphase A/B comparison (8 scenarios, 1-8 to pick) |
+| Queries   | `Shift+Q`    | Query demos (1-5: raycast, AABB, point, shapecast, TOI) |
 
 
 ## Architecture

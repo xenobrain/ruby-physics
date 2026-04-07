@@ -35,7 +35,6 @@ module Physics
   CAP_NORMS_B  ||= [0.0, 0.0, 0.0, 0.0]
   SAT_A        ||= [0.0, 0]
   SAT_B        ||= [0.0, 0]
-
   LINEAR_SLOP        = 0.5
   SPECULATIVE_DISTANCE = 2.0
   PI                 = Math::PI
@@ -726,6 +725,175 @@ module Physics
       nil
     end
 
+    # Yields (shape, body, px, py, nx, ny, fraction) per hit. Block returns new max_fraction.
+    def cast_ray world, origin_x, origin_y, dir_x, dir_y, max_fraction = 1.0, layer: 0xFFFF, mask: 0xFFFF, &block
+      return unless block
+      bp = world[:broadphase]
+      if world[:broadphase_type] == :dynamic_tree
+        st = bp[:static_tree]; dt = bp[:dynamic_tree]
+        ray_cb = proc { |shape, mf|
+          b = shape[:body]
+          sl = shape[:layer] || 0xFFFF; sm = shape[:mask] || 0xFFFF
+          if (sl & mask) != 0 && (sm & layer) != 0
+            hit = Collide.ray_cast_shape(shape, b, origin_x, origin_y, dir_x, dir_y, mf)
+            if hit
+              new_frac = block.call(shape, b, hit[:point_x], hit[:point_y], hit[:normal_x], hit[:normal_y], hit[:fraction])
+              new_frac || mf
+            else
+              mf
+            end
+          else
+            mf
+          end
+        }
+        max_fraction = tree_ray_cast(st, origin_x, origin_y, dir_x, dir_y, max_fraction, &ray_cb) if st
+        tree_ray_cast(dt, origin_x, origin_y, dir_x, dir_y, max_fraction, &ray_cb) if dt && max_fraction > 0.0
+      else
+        # spatial hash fallback: brute-force all shapes
+        shapes = world[:shapes]; i = 0
+        while i < shapes.length
+          shape = shapes[i]; i += 1
+          b = shape[:body]
+          sl = shape[:layer] || 0xFFFF; sm = shape[:mask] || 0xFFFF
+          next unless (sl & mask) != 0 && (sm & layer) != 0
+          hit = Collide.ray_cast_shape(shape, b, origin_x, origin_y, dir_x, dir_y, max_fraction)
+          if hit
+            new_frac = block.call(shape, b, hit[:point_x], hit[:point_y], hit[:normal_x], hit[:normal_y], hit[:fraction])
+            max_fraction = new_frac if new_frac && new_frac < max_fraction
+            break if max_fraction <= 0.0
+          end
+        end
+      end
+    end
+
+    # Returns closest ray hit or nil.
+    def cast_ray_closest world, origin_x, origin_y, dir_x, dir_y, max_fraction = 1.0, layer: 0xFFFF, mask: 0xFFFF
+      result = nil
+      cast_ray(world, origin_x, origin_y, dir_x, dir_y, max_fraction, layer: layer, mask: mask) do |shape, body, px, py, nx, ny, frac|
+        next max_fraction if frac == 0.0  # skip initial overlaps like Box2D
+        result = { shape: shape, body: body, point_x: px, point_y: py, normal_x: nx, normal_y: ny, fraction: frac }
+        frac  # clip ray to this hit
+      end
+      result
+    end
+
+    # Yields (shape, body) for shapes whose AABB overlaps the rect. Return false to stop.
+    def overlap_aabb world, x0, y0, x1, y1, layer: 0xFFFF, mask: 0xFFFF, &block
+      return unless block
+      bp = world[:broadphase]
+      if world[:broadphase_type] == :dynamic_tree
+        st = bp[:static_tree]; dt = bp[:dynamic_tree]
+        overlap_cb = proc { |shape|
+          sl = shape[:layer] || 0xFFFF; sm = shape[:mask] || 0xFFFF
+          if (sl & mask) != 0 && (sm & layer) != 0
+            # check actual shape AABB (not fat AABB)
+            sa = shape[:aabb_x0]; sb = shape[:aabb_y0]; sc = shape[:aabb_x1]; sd = shape[:aabb_y1]
+            if sa && sc && !(sa > x1 || sc < x0 || sb > y1 || sd < y0)
+              block.call(shape, shape[:body])
+            else
+              true
+            end
+          else
+            true
+          end
+        }
+        tree_overlap(st, x0, y0, x1, y1, &overlap_cb) if st
+        tree_overlap(dt, x0, y0, x1, y1, &overlap_cb) if dt
+      else
+        shapes = world[:shapes]; i = 0
+        while i < shapes.length
+          shape = shapes[i]; i += 1
+          sl = shape[:layer] || 0xFFFF; sm = shape[:mask] || 0xFFFF
+          next unless (sl & mask) != 0 && (sm & layer) != 0
+          sa = shape[:aabb_x0]; next unless sa
+          next if sa > x1 || shape[:aabb_x1] < x0 || shape[:aabb_y0] > y1 || shape[:aabb_y1] < y0
+          break unless block.call(shape, shape[:body])
+        end
+      end
+    end
+
+    # Yields (shape, body) for shapes containing the point. Return false to stop.
+    def overlap_point world, px, py, layer: 0xFFFF, mask: 0xFFFF, &block
+      return unless block
+      overlap_aabb(world, px, py, px, py, layer: layer, mask: mask) do |shape, body|
+        t = shape[:type]
+        inside = false
+        if t == :circle
+          cx = body[:x] + shape[:offset_x]; cy = body[:y] + shape[:offset_y]
+          ddx = px - cx; ddy = py - cy
+          inside = ddx * ddx + ddy * ddy <= shape[:radius] * shape[:radius]
+        elsif t == :polygon
+          wv = shape[:world_vertices]; wn = shape[:world_normals]; count = shape[:count]
+          if wv && wn
+            inside = true; j = 0
+            while j < count
+              j2 = j * 2
+              if wn[j2] * (px - wv[j2]) + wn[j2 + 1] * (py - wv[j2 + 1]) > 0
+                inside = false; break
+              end
+              j += 1
+            end
+          end
+        elsif t == :capsule
+          w1x = shape[:wx1]; w1y = shape[:wy1]; w2x = shape[:wx2]; w2y = shape[:wy2]
+          if w1x
+            Collide.closest_point_on_segment w1x, w1y, w2x, w2y, px, py
+            ddx = px - CP_RESULT[0]; ddy = py - CP_RESULT[1]
+            inside = ddx * ddx + ddy * ddy <= shape[:radius] * shape[:radius]
+          end
+        elsif t == :segment
+          # segments have no area, skip
+        end
+        if inside
+          block.call(shape, body)
+        else
+          true
+        end
+      end
+    end
+
+    # Returns first shape at point, or nil.
+    def shape_at_point world, px, py, layer: 0xFFFF, mask: 0xFFFF
+      found = nil
+      overlap_point(world, px, py, layer: layer, mask: mask) do |shape, _body|
+        found = shape
+        false  # stop after first
+      end
+      found
+    end
+
+    # Sweep a shape along (tx,ty) and return closest hit or nil.
+    def cast_shape world, shape, body, tx, ty, max_fraction = 1.0, layer: 0xFFFF, mask: 0xFFFF
+      proxy_a = Collide.make_proxy(shape, body)
+      return nil unless proxy_a
+      best = nil
+
+      # compute swept AABB for broadphase
+      compute_aabb shape, body
+      ex = max_fraction * tx; ey = max_fraction * ty
+      x0 = shape[:aabb_x0]; y0 = shape[:aabb_y0]; x1 = shape[:aabb_x1]; y1 = shape[:aabb_y1]
+      sx0 = x0 + (ex < 0 ? ex : 0); sy0 = y0 + (ey < 0 ? ey : 0)
+      sx1 = x1 + (ex > 0 ? ex : 0); sy1 = y1 + (ey > 0 ? ey : 0)
+
+      overlap_aabb(world, sx0, sy0, sx1, sy1, layer: layer, mask: mask) do |other_shape, other_body|
+        next true if other_shape.equal?(shape)
+        next true if other_body.equal?(body)
+        proxy_b = Collide.make_proxy(other_shape, other_body)
+        next true unless proxy_b
+        hit = Collide.shape_cast(proxy_b, proxy_a, tx, ty, max_fraction)
+        if hit && hit[:hit]
+          if best.nil? || hit[:fraction] < best[:fraction]
+            best = { shape: other_shape, body: other_body, fraction: hit[:fraction],
+                     point_x: hit[:point_x], point_y: hit[:point_y],
+                     normal_x: hit[:normal_x], normal_y: hit[:normal_y] }
+            max_fraction = hit[:fraction]
+          end
+        end
+        true
+      end
+      best
+    end
+
     def transform_shapes world
       shapes = world[:shapes]
       i = 0
@@ -1168,6 +1336,80 @@ module Physics
       end
     end
 
+    # Ray cast against the dynamic tree. Uses SAT-based AABB pruning.
+    # Yields (shape, fraction) for each leaf hit. Block must return new max_fraction
+    # (return a fraction to clip, 0 to stop, or max_fraction to continue).
+    def tree_ray_cast tree, ox, oy, dx, dy, max_fraction
+      return max_fraction if tree[:root].nil?
+      nodes = tree[:nodes]; stack = TREE_STACK; sp = 0
+      stack[sp] = tree[:root]; sp += 1
+      # precompute ray perpendicular for SAT test
+      len_sq = dx * dx + dy * dy
+      return max_fraction if len_sq < 1e-20
+      inv_len = 1.0 / Math.sqrt(len_sq)
+      # perpendicular direction (unnormalized is fine for SAT)
+      vx = -dy * inv_len; vy = dx * inv_len
+      abs_vx = vx.abs; abs_vy = vy.abs
+      # ray segment AABB
+      p2x = ox + max_fraction * dx; p2y = oy + max_fraction * dy
+      seg_x0 = ox < p2x ? ox : p2x; seg_y0 = oy < p2y ? oy : p2y
+      seg_x1 = ox > p2x ? ox : p2x; seg_y1 = oy > p2y ? oy : p2y
+      while sp > 0
+        sp -= 1; node_id = stack[sp]; n = nodes[node_id]
+        # AABB overlap test
+        next if n[:aabb_x0] > seg_x1 || n[:aabb_x1] < seg_x0 || n[:aabb_y0] > seg_y1 || n[:aabb_y1] < seg_y0
+        # SAT test: |dot(v, p1 - c)| > dot(|v|, h)
+        cx = (n[:aabb_x0] + n[:aabb_x1]) * 0.5; cy = (n[:aabb_y0] + n[:aabb_y1]) * 0.5
+        hx = (n[:aabb_x1] - n[:aabb_x0]) * 0.5; hy = (n[:aabb_y1] - n[:aabb_y0]) * 0.5
+        sep = (vx * (ox - cx) + vy * (oy - cy)).abs
+        next if sep > abs_vx * hx + abs_vy * hy
+        if n[:height] == 0
+          shape = n[:user_data]
+          new_frac = yield shape, max_fraction
+          if new_frac == 0.0
+            return 0.0
+          end
+          if new_frac < max_fraction
+            max_fraction = new_frac
+            p2x = ox + max_fraction * dx; p2y = oy + max_fraction * dy
+            seg_x0 = ox < p2x ? ox : p2x; seg_y0 = oy < p2y ? oy : p2y
+            seg_x1 = ox > p2x ? ox : p2x; seg_y1 = oy > p2y ? oy : p2y
+          end
+        else
+          # push closer child last (popped first) for better pruning
+          c1 = n[:child1]; c2 = n[:child2]
+          n1 = nodes[c1]; n2 = nodes[c2]
+          cx1 = (n1[:aabb_x0] + n1[:aabb_x1]) * 0.5; cy1 = (n1[:aabb_y0] + n1[:aabb_y1]) * 0.5
+          cx2 = (n2[:aabb_x0] + n2[:aabb_x1]) * 0.5; cy2 = (n2[:aabb_y0] + n2[:aabb_y1]) * 0.5
+          d1 = (cx1 - ox) * (cx1 - ox) + (cy1 - oy) * (cy1 - oy)
+          d2 = (cx2 - ox) * (cx2 - ox) + (cy2 - oy) * (cy2 - oy)
+          if d1 < d2
+            stack[sp] = c2; sp += 1; stack[sp] = c1; sp += 1
+          else
+            stack[sp] = c1; sp += 1; stack[sp] = c2; sp += 1
+          end
+        end
+      end
+      max_fraction
+    end
+
+    # AABB query against the dynamic tree. Yields each shape whose fat AABB overlaps.
+    def tree_overlap tree, qx0, qy0, qx1, qy1
+      return if tree[:root].nil?
+      nodes = tree[:nodes]; stack = TREE_STACK; sp = 0
+      stack[sp] = tree[:root]; sp += 1
+      while sp > 0
+        sp -= 1; node_id = stack[sp]; n = nodes[node_id]
+        next if n[:aabb_x0] > qx1 || n[:aabb_x1] < qx0 || n[:aabb_y0] > qy1 || n[:aabb_y1] < qy0
+        if n[:height] == 0
+          cont = yield n[:user_data]
+          return unless cont
+        else
+          stack[sp] = n[:child1]; sp += 1; stack[sp] = n[:child2]; sp += 1
+        end
+      end
+    end
+
     def tree_reset tree
       nodes = tree[:nodes]; cap = tree[:node_capacity]; i = 0
       while i < cap
@@ -1286,7 +1528,6 @@ module Physics
         spatial_hash_broadphase world, shapes, bp, n, candidates, seen
       end
 
-      # build non-collide body-pair set from joints
       no_collide = bp[:no_collide]
       no_collide.clear
       joints = world[:joints]
@@ -1297,7 +1538,7 @@ module Physics
         no_collide[Physics.pair_key(jt[:body_a], jt[:body_b])] = true
       end
 
-      # narrowphase on candidates (candidates are shape refs now)
+      # narrowphase on candidates
       ci = 0
       while ci < candidates.length
         sa = candidates[ci]; sb = candidates[ci + 1]; ci += 2
@@ -1437,7 +1678,7 @@ module Physics
         end
       end
 
-      # destroy truly stale pairs (AABB no longer overlaps)
+      # destroy stale pairs
       pairs.delete_if do |_k, v|
         if v[:stale]
           if v[:touching]
@@ -1632,7 +1873,7 @@ module Collide
       result[0] = best_sep; result[1] = best_idx
     end
 
-    # clip_polygons — Chipmunk-style symmetric edge clipping
+    # clip_polygons — symmetric edge clipping
     def clip_polygons va, na, ca, ra, vb, nb, cb, rb, edge_a, edge_b, flip
       if flip
         v1 = vb; n1 = nb; c1 = cb; r1 = rb
@@ -2011,6 +2252,838 @@ module Collide
       MR[:points].clear
       MR[:points] << make_contact_point(px - ba[:x], py - ba[:y], px - bb[:x], py - bb[:y], dist, 0)
       MR
+    end
+
+    # Per-shape ray casts. Returns nil on miss or RAY_HIT on hit.
+    RAY_HIT ||= { hit: false, point_x: 0.0, point_y: 0.0, normal_x: 0.0, normal_y: 0.0, fraction: 0.0 }
+
+    def ray_cast_circle shape, body, ox, oy, dx, dy, max_fraction
+      cx = body[:x] + shape[:offset_x]; cy = body[:y] + shape[:offset_y]
+      r = shape[:radius]
+      # shift origin so circle center is at origin
+      sx = ox - cx; sy = oy - cy
+      len_sq = dx * dx + dy * dy
+      return nil if len_sq < 1e-20
+      length = Math.sqrt(len_sq)
+      inv_len = 1.0 / length
+      ux = dx * inv_len; uy = dy * inv_len
+      # closest point on ray to center: t = -dot(s, u)
+      t = -(sx * ux + sy * uy)
+      # closest point
+      qx = sx + t * ux; qy = sy + t * uy
+      qq = qx * qx + qy * qy
+      rr = r * r
+      return nil if qq > rr
+      h = Math.sqrt(rr - qq)
+      fraction = t - h
+      if fraction < 0.0
+        # ray starts inside circle
+        return nil if sx * sx + sy * sy > rr
+        nx = sx; ny = sy
+        nl = Math.sqrt(nx * nx + ny * ny)
+        if nl > 1e-10; nx /= nl; ny /= nl; else nx = 0.0; ny = 1.0; end
+        RAY_HIT[:hit] = true; RAY_HIT[:fraction] = 0.0
+        RAY_HIT[:point_x] = ox; RAY_HIT[:point_y] = oy
+        RAY_HIT[:normal_x] = nx; RAY_HIT[:normal_y] = ny
+        return RAY_HIT
+      end
+      f = fraction / length
+      return nil if f > max_fraction
+      hx = sx + fraction * ux; hy = sy + fraction * uy
+      hl = Math.sqrt(hx * hx + hy * hy)
+      if hl > 1e-10; nx = hx / hl; ny = hy / hl; else nx = 0.0; ny = 1.0; end
+      RAY_HIT[:hit] = true; RAY_HIT[:fraction] = f
+      RAY_HIT[:point_x] = cx + r * nx; RAY_HIT[:point_y] = cy + r * ny
+      RAY_HIT[:normal_x] = nx; RAY_HIT[:normal_y] = ny
+      RAY_HIT
+    end
+
+    def ray_cast_capsule shape, body, ox, oy, dx, dy, max_fraction
+      cos_a = Math.cos(body[:angle]); sin_a = Math.sin(body[:angle])
+      bx = body[:x]; by = body[:y]
+      v1x = bx + cos_a * shape[:x1] - sin_a * shape[:y1]
+      v1y = by + sin_a * shape[:x1] + cos_a * shape[:y1]
+      v2x = bx + cos_a * shape[:x2] - sin_a * shape[:y2]
+      v2y = by + sin_a * shape[:x2] + cos_a * shape[:y2]
+      r = shape[:radius]
+      ex = v2x - v1x; ey = v2y - v1y
+      cap_len_sq = ex * ex + ey * ey
+      # degenerate: treat as circle at v1
+      if cap_len_sq < 1e-20
+        saved_ox = shape[:offset_x]; saved_oy = shape[:offset_y]
+        shape[:offset_x] = shape[:x1]; shape[:offset_y] = shape[:y1]
+        result = ray_cast_circle(shape, body, ox, oy, dx, dy, max_fraction)
+        shape[:offset_x] = saved_ox; shape[:offset_y] = saved_oy
+        return result
+      end
+      cap_len = Math.sqrt(cap_len_sq)
+      ax = ex / cap_len; ay = ey / cap_len
+      # perpendicular (right-hand normal)
+      nx = ay; ny = -ax
+      # ray origin relative to v1
+      qx = ox - v1x; qy = oy - v1y
+      qa = qx * ax + qy * ay  # projection onto capsule axis
+      qp_x = qx - qa * ax; qp_y = qy - qa * ay
+      qp_sq = qp_x * qp_x + qp_y * qp_y
+      rr = r * r
+      # check if ray starts inside infinite capsule
+      if qp_sq < rr
+        if qa < 0.0
+          return ray_cast_circle_at(v1x, v1y, r, ox, oy, dx, dy, max_fraction)
+        elsif qa > cap_len
+          return ray_cast_circle_at(v2x, v2y, r, ox, oy, dx, dy, max_fraction)
+        else
+          # starts inside capsule body
+          RAY_HIT[:hit] = true; RAY_HIT[:fraction] = 0.0
+          RAY_HIT[:point_x] = ox; RAY_HIT[:point_y] = oy
+          nl = Math.sqrt(qp_sq)
+          if nl > 1e-10
+            RAY_HIT[:normal_x] = qp_x / nl; RAY_HIT[:normal_y] = qp_y / nl
+          else
+            RAY_HIT[:normal_x] = nx; RAY_HIT[:normal_y] = ny
+          end
+          return RAY_HIT
+        end
+      end
+      # normalize ray direction
+      ray_len_sq = dx * dx + dy * dy
+      return nil if ray_len_sq < 1e-20
+      ray_len = Math.sqrt(ray_len_sq)
+      ux = dx / ray_len; uy = dy / ray_len
+      # denominator from Cramer's rule on the system s1*a - s2*u = b
+      # det([a | -u]) = -ax*uy + ay*ux
+      den = ay * ux - ax * uy
+      if den.abs < 1e-10
+        # ray parallel to capsule axis — check endpoints
+        hit1 = ray_cast_circle_at(v1x, v1y, r, ox, oy, dx, dy, max_fraction)
+        hit2 = ray_cast_circle_at(v2x, v2y, r, ox, oy, dx, dy, max_fraction)
+        return nil unless hit1 || hit2
+        return hit1 unless hit2
+        return hit2 unless hit1
+        return hit1[:fraction] <= hit2[:fraction] ? hit1 : hit2
+      end
+      inv_den = 1.0 / den
+      # two edge candidates: q ± r*n
+      # b = q + r*n -> hit point = axis - r*n -> outward normal = -n
+      # b = q - r*n -> hit point = axis + r*n -> outward normal = +n
+      b1x = qx + r * nx; b1y = qy + r * ny
+      b2x = qx - r * nx; b2y = qy - r * ny
+      s21 = (ax * b1y - ay * b1x) * inv_den
+      s22 = (ax * b2y - ay * b2x) * inv_den
+      if s21 < s22
+        s2 = s21; bx_ = b1x; by_ = b1y; hn_x = -nx; hn_y = -ny
+      else
+        s2 = s22; bx_ = b2x; by_ = b2y; hn_x = nx; hn_y = ny
+      end
+      s1 = (ux * by_ - bx_ * uy) * inv_den
+      if s1 < 0.0
+        return ray_cast_circle_at(v1x, v1y, r, ox, oy, dx, dy, max_fraction)
+      elsif s1 > cap_len
+        return ray_cast_circle_at(v2x, v2y, r, ox, oy, dx, dy, max_fraction)
+      end
+      f = s2 / ray_len
+      return nil if f < 0.0 || f > max_fraction
+      RAY_HIT[:hit] = true; RAY_HIT[:fraction] = f
+      t_on_axis = s1 / cap_len
+      RAY_HIT[:point_x] = v1x + t_on_axis * ex + r * hn_x
+      RAY_HIT[:point_y] = v1y + t_on_axis * ey + r * hn_y
+      RAY_HIT[:normal_x] = hn_x; RAY_HIT[:normal_y] = hn_y
+      RAY_HIT
+    end
+
+    def ray_cast_segment shape, _body, ox, oy, dx, dy, max_fraction
+      # world-space endpoints
+      w1x = shape[:wx1]; w1y = shape[:wy1]; w2x = shape[:wx2]; w2y = shape[:wy2]
+      ex = w2x - w1x; ey = w2y - w1y
+      el = Math.sqrt(ex * ex + ey * ey)
+      return nil if el < 1e-10
+      eux = ex / el; euy = ey / el
+      # edge normal (right perpendicular)
+      enx = euy; eny = -eux
+      numerator = enx * (w1x - ox) + eny * (w1y - oy)
+      denominator = enx * dx + eny * dy
+      return nil if denominator.abs < 1e-10
+      t = numerator / denominator
+      return nil if t < 0.0 || t > max_fraction
+      # intersection point
+      px = ox + t * dx; py = oy + t * dy
+      # check if hit is within segment bounds
+      s = (px - w1x) * eux + (py - w1y) * euy
+      return nil if s < 0.0 || s > el
+      # normal direction: point away from ray origin
+      if numerator > 0.0; nnx = enx; nny = eny; else nnx = -enx; nny = -eny; end
+      RAY_HIT[:hit] = true; RAY_HIT[:fraction] = t
+      RAY_HIT[:point_x] = px; RAY_HIT[:point_y] = py
+      RAY_HIT[:normal_x] = nnx; RAY_HIT[:normal_y] = nny
+      RAY_HIT
+    end
+
+    def ray_cast_polygon shape, _body, ox, oy, dx, dy, max_fraction
+      wv = shape[:world_vertices]; wn = shape[:world_normals]; count = shape[:count]
+      return nil unless wv && wn
+      lower = 0.0; upper = max_fraction; index = -1
+      i = 0
+      while i < count
+        i2 = i * 2
+        vnx = wn[i2]; vny = wn[i2 + 1]
+        vx = wv[i2]; vy = wv[i2 + 1]
+        numerator = vnx * (vx - ox) + vny * (vy - oy)
+        denominator = vnx * dx + vny * dy
+        if denominator.abs < 1e-10
+          return nil if numerator < 0.0
+        elsif denominator < 0.0
+          t = numerator / denominator
+          if t > lower; lower = t; index = i; end
+        else
+          t = numerator / denominator
+          upper = t if t < upper
+        end
+        return nil if upper < lower
+        i += 1
+      end
+      return nil if index < 0
+      f = lower
+      return nil if f > max_fraction
+      i2 = index * 2
+      RAY_HIT[:hit] = true; RAY_HIT[:fraction] = f
+      RAY_HIT[:point_x] = ox + f * dx; RAY_HIT[:point_y] = oy + f * dy
+      RAY_HIT[:normal_x] = wn[i2]; RAY_HIT[:normal_y] = wn[i2 + 1]
+      RAY_HIT
+    end
+
+    def ray_cast_shape shape, body, ox, oy, dx, dy, max_fraction
+      t = shape[:type]
+      if t == :circle
+        ray_cast_circle shape, body, ox, oy, dx, dy, max_fraction
+      elsif t == :capsule
+        ray_cast_capsule shape, body, ox, oy, dx, dy, max_fraction
+      elsif t == :polygon
+        ray_cast_polygon shape, body, ox, oy, dx, dy, max_fraction
+      elsif t == :segment
+        ray_cast_segment shape, body, ox, oy, dx, dy, max_fraction
+      end
+    end
+
+    # helper: ray cast against a circle at an arbitrary world position
+    def ray_cast_circle_at cx, cy, r, ox, oy, dx, dy, max_fraction
+      sx = ox - cx; sy = oy - cy
+      len_sq = dx * dx + dy * dy
+      return nil if len_sq < 1e-20
+      length = Math.sqrt(len_sq)
+      inv_len = 1.0 / length
+      ux = dx * inv_len; uy = dy * inv_len
+      t = -(sx * ux + sy * uy)
+      qx = sx + t * ux; qy = sy + t * uy
+      qq = qx * qx + qy * qy
+      rr = r * r
+      return nil if qq > rr
+      h = Math.sqrt(rr - qq)
+      fraction = t - h
+      if fraction < 0.0
+        return nil if sx * sx + sy * sy > rr
+        RAY_HIT[:hit] = true; RAY_HIT[:fraction] = 0.0
+        RAY_HIT[:point_x] = ox; RAY_HIT[:point_y] = oy
+        nl = Math.sqrt(sx * sx + sy * sy)
+        if nl > 1e-10; RAY_HIT[:normal_x] = sx / nl; RAY_HIT[:normal_y] = sy / nl
+        else RAY_HIT[:normal_x] = 0.0; RAY_HIT[:normal_y] = 1.0; end
+        return RAY_HIT
+      end
+      f = fraction / length
+      return nil if f > max_fraction
+      hx = sx + fraction * ux; hy = sy + fraction * uy
+      hl = Math.sqrt(hx * hx + hy * hy)
+      if hl > 1e-10; hnx = hx / hl; hny = hy / hl; else hnx = 0.0; hny = 1.0; end
+      RAY_HIT[:hit] = true; RAY_HIT[:fraction] = f
+      RAY_HIT[:point_x] = cx + r * hnx; RAY_HIT[:point_y] = cy + r * hny
+      RAY_HIT[:normal_x] = hnx; RAY_HIT[:normal_y] = hny
+      RAY_HIT
+    end
+
+    # GJK distance (Chipmunk-style). 2-point simplex on B ⊖ A, zero allocation in hot loop.
+    GJK_MAX_ITERS = 20
+    GJK_RESULT ||= { distance: 0.0, raw_distance: 0.0, point_ax: 0.0, point_ay: 0.0, point_bx: 0.0, point_by: 0.0,
+                      normal_x: 0.0, normal_y: 0.0, iterations: 0 }
+
+    def make_proxy shape, body
+      t = shape[:type]
+      if t == :circle
+        cx = body[:x] + shape[:offset_x]; cy = body[:y] + shape[:offset_y]
+        { points_x: [cx], points_y: [cy], count: 1, radius: shape[:radius] }
+      elsif t == :polygon
+        wv = shape[:world_vertices]; count = shape[:count]
+        px = []; py = []; i = 0
+        while i < count; px << wv[i * 2]; py << wv[i * 2 + 1]; i += 1; end
+        { points_x: px, points_y: py, count: count, radius: 0.0 }
+      elsif t == :capsule
+        { points_x: [shape[:wx1], shape[:wx2]], points_y: [shape[:wy1], shape[:wy2]],
+          count: 2, radius: shape[:radius] }
+      elsif t == :segment
+        { points_x: [shape[:wx1], shape[:wx2]], points_y: [shape[:wy1], shape[:wy2]],
+          count: 2, radius: 0.0 }
+      end
+    end
+
+    def support proxy, dx, dy
+      best = -1e18; best_i = 0; px = proxy[:points_x]; py = proxy[:points_y]; n = proxy[:count]; i = 0
+      while i < n
+        d = px[i] * dx + py[i] * dy
+        if d > best; best = d; best_i = i; end
+        i += 1
+      end
+      best_i
+    end
+
+    def shape_distance proxy_a, proxy_b, cache = nil
+      pax = proxy_a[:points_x]; pay = proxy_a[:points_y]
+      pbx = proxy_b[:points_x]; pby = proxy_b[:points_y]
+
+      # Initialize 2-point simplex on Minkowski difference B ⊖ A
+      if cache && cache[:count] == 2
+        i_a0 = cache[:index_a0]; i_b0 = cache[:index_b0]
+        i_a1 = cache[:index_a1]; i_b1 = cache[:index_b1]
+      else
+        na = proxy_a[:count]; nb = proxy_b[:count]
+        cx_a = 0.0; cy_a = 0.0; i = 0
+        while i < na; cx_a += pax[i]; cy_a += pay[i]; i += 1; end
+        cx_a /= na; cy_a /= na
+        cx_b = 0.0; cy_b = 0.0; i = 0
+        while i < nb; cx_b += pbx[i]; cy_b += pby[i]; i += 1; end
+        cx_b /= nb; cy_b /= nb
+        sdx = cx_b - cx_a; sdy = cy_b - cy_a
+        if sdx * sdx + sdy * sdy < 1e-20; sdx = 1.0; sdy = 0.0; end
+        # Use perpendicular of center offset (Chipmunk convention) to spread
+        # search along edges rather than across them
+        pdx = -sdy; pdy = sdx
+        i_a0 = support(proxy_a, -pdx, -pdy)
+        i_b0 = support(proxy_b, pdx, pdy)
+        i_a1 = support(proxy_a, pdx, pdy)
+        i_b1 = support(proxy_b, -pdx, -pdy)
+      end
+
+      # Build simplex points: w = b - a
+      v0_ax = pax[i_a0]; v0_ay = pay[i_a0]; v0_bx = pbx[i_b0]; v0_by = pby[i_b0]
+      v0_x = v0_bx - v0_ax; v0_y = v0_by - v0_ay
+      v0_id = (i_a0 & 0xFF) << 8 | (i_b0 & 0xFF)
+
+      # If both simplex points are identical (e.g. single-vertex shapes),
+      # retry by searching from v0 toward origin
+      v1_ax = pax[i_a1]; v1_ay = pay[i_a1]; v1_bx = pbx[i_b1]; v1_by = pby[i_b1]
+      v1_x = v1_bx - v1_ax; v1_y = v1_by - v1_ay
+      v1_id = (i_a1 & 0xFF) << 8 | (i_b1 & 0xFF)
+      if v0_id == v1_id
+        rdx = -v0_x; rdy = -v0_y
+        if rdx * rdx + rdy * rdy < 1e-20; rdx = 1.0; rdy = 0.0; end
+        i_a1 = support(proxy_a, -rdx, -rdy)
+        i_b1 = support(proxy_b, rdx, rdy)
+        v1_ax = pax[i_a1]; v1_ay = pay[i_a1]; v1_bx = pbx[i_b1]; v1_by = pby[i_b1]
+        v1_x = v1_bx - v1_ax; v1_y = v1_by - v1_ay
+        v1_id = (i_a1 & 0xFF) << 8 | (i_b1 & 0xFF)
+      end
+
+      dx = 0.0; dy = 0.0; overlap = false
+      iter = 0
+      while iter < GJK_MAX_ITERS
+        # Maintain winding: origin must be to the left of directed edge v0→v1
+        if (v0_y - v1_y) * (v1_x + v0_x) > (v0_x - v1_x) * (v1_y + v0_y)
+          v0_ax, v1_ax = v1_ax, v0_ax; v0_ay, v1_ay = v1_ay, v0_ay
+          v0_bx, v1_bx = v1_bx, v0_bx; v0_by, v1_by = v1_by, v0_by
+          v0_x, v1_x = v1_x, v0_x; v0_y, v1_y = v1_y, v0_y
+          v0_id, v1_id = v1_id, v0_id
+          i_a0, i_a1 = i_a1, i_a0; i_b0, i_b1 = i_b1, i_b0
+          next
+        end
+
+        # ClosestT: parametric closest point on segment v0..v1 to origin, t ∈ [-1, 1]
+        delta_x = v1_x - v0_x; delta_y = v1_y - v0_y
+        len_sq = delta_x * delta_x + delta_y * delta_y
+        t = -(delta_x * (v0_x + v1_x) + delta_y * (v0_y + v1_y)) / (len_sq + 1e-30)
+        t = -1.0 if t < -1.0; t = 1.0 if t > 1.0
+
+        # Search direction toward origin
+        if t > -1.0 && t < 1.0
+          dx = -delta_y; dy = delta_x
+        else
+          ht = 0.5 * t
+          dx = -(v0_x * (0.5 - ht) + v1_x * (0.5 + ht))
+          dy = -(v0_y * (0.5 - ht) + v1_y * (0.5 + ht))
+        end
+        break if dx * dx + dy * dy < 1e-20
+
+        # New support point on Minkowski difference
+        i_a2 = support(proxy_a, -dx, -dy)
+        i_b2 = support(proxy_b, dx, dy)
+        id2 = (i_a2 & 0xFF) << 8 | (i_b2 & 0xFF)
+        break if id2 == v0_id || id2 == v1_id
+
+        v2_x = pbx[i_b2] - pax[i_a2]; v2_y = pby[i_b2] - pay[i_a2]
+
+        # Triangle containment: origin inside (v0, v2, v1) means overlap
+        if ((v0_y - v2_y) * (v2_x + v0_x) > (v0_x - v2_x) * (v2_y + v0_y)) &&
+           ((v2_y - v1_y) * (v1_x + v2_x) > (v2_x - v1_x) * (v1_y + v2_y))
+          overlap = true; break
+        end
+
+        # Progress check
+        dp = v2_x * dx + v2_y * dy
+        dv0 = v0_x * dx + v0_y * dy; dv1 = v1_x * dx + v1_y * dy
+        break if dp <= (dv0 > dv1 ? dv0 : dv1)
+
+        # Drop the simplex vertex whose sub-edge is farther from origin
+        d02_x = v2_x - v0_x; d02_y = v2_y - v0_y
+        ls02 = d02_x * d02_x + d02_y * d02_y
+        t02 = -(d02_x * (v0_x + v2_x) + d02_y * (v0_y + v2_y)) / (ls02 + 1e-30)
+        t02 = -1.0 if t02 < -1.0; t02 = 1.0 if t02 > 1.0
+        ht02 = 0.5 * t02
+        px02 = v0_x * (0.5 - ht02) + v2_x * (0.5 + ht02)
+        py02 = v0_y * (0.5 - ht02) + v2_y * (0.5 + ht02)
+        dist02 = px02 * px02 + py02 * py02
+
+        d21_x = v1_x - v2_x; d21_y = v1_y - v2_y
+        ls21 = d21_x * d21_x + d21_y * d21_y
+        t21 = -(d21_x * (v2_x + v1_x) + d21_y * (v2_y + v1_y)) / (ls21 + 1e-30)
+        t21 = -1.0 if t21 < -1.0; t21 = 1.0 if t21 > 1.0
+        ht21 = 0.5 * t21
+        px21 = v2_x * (0.5 - ht21) + v1_x * (0.5 + ht21)
+        py21 = v2_y * (0.5 - ht21) + v1_y * (0.5 + ht21)
+        dist21 = px21 * px21 + py21 * py21
+
+        v2_ax = pax[i_a2]; v2_ay = pay[i_a2]; v2_bx = pbx[i_b2]; v2_by = pby[i_b2]
+        if dist02 < dist21
+          v1_ax = v2_ax; v1_ay = v2_ay; v1_bx = v2_bx; v1_by = v2_by
+          v1_x = v2_x; v1_y = v2_y; v1_id = id2; i_a1 = i_a2; i_b1 = i_b2
+        else
+          v0_ax = v2_ax; v0_ay = v2_ay; v0_bx = v2_bx; v0_by = v2_by
+          v0_x = v2_x; v0_y = v2_y; v0_id = id2; i_a0 = i_a2; i_b0 = i_b2
+        end
+        iter += 1
+      end
+
+      if overlap
+        # Origin inside Minkowski triangle — shapes overlap, distance = 0
+        # Use last search direction (toward origin) as approximate normal
+        nl = Math.sqrt(dx * dx + dy * dy)
+        if nl > 1e-10; nx = -dx / nl; ny = -dy / nl
+        else nx = 0.0; ny = 1.0; end
+        ra = proxy_a[:radius]; rb = proxy_b[:radius]
+        # Approximate witness points at midpoint of interpolated support points
+        delta_x = v1_x - v0_x; delta_y = v1_y - v0_y
+        len_sq = delta_x * delta_x + delta_y * delta_y
+        t = -(delta_x * (v0_x + v1_x) + delta_y * (v0_y + v1_y)) / (len_sq + 1e-30)
+        t = -1.0 if t < -1.0; t = 1.0 if t > 1.0
+        ht = 0.5 * t
+        pAx = v0_ax * (0.5 - ht) + v1_ax * (0.5 + ht) + ra * nx
+        pAy = v0_ay * (0.5 - ht) + v1_ay * (0.5 + ht) + ra * ny
+        pBx = v0_bx * (0.5 - ht) + v1_bx * (0.5 + ht) - rb * nx
+        pBy = v0_by * (0.5 - ht) + v1_by * (0.5 + ht) - rb * ny
+        raw_dist = 0.0; dist = 0.0
+      else
+        # Witness points via ClosestT on final simplex edge
+        delta_x = v1_x - v0_x; delta_y = v1_y - v0_y
+        len_sq = delta_x * delta_x + delta_y * delta_y
+        t = -(delta_x * (v0_x + v1_x) + delta_y * (v0_y + v1_y)) / (len_sq + 1e-30)
+        t = -1.0 if t < -1.0; t = 1.0 if t > 1.0
+        ht = 0.5 * t
+
+        pAx = v0_ax * (0.5 - ht) + v1_ax * (0.5 + ht)
+        pAy = v0_ay * (0.5 - ht) + v1_ay * (0.5 + ht)
+        pBx = v0_bx * (0.5 - ht) + v1_bx * (0.5 + ht)
+        pBy = v0_by * (0.5 - ht) + v1_by * (0.5 + ht)
+
+        ddx = pBx - pAx; ddy = pBy - pAy
+        raw_dist = Math.sqrt(ddx * ddx + ddy * ddy)
+
+        ra = proxy_a[:radius]; rb = proxy_b[:radius]; total_r = ra + rb
+        if raw_dist > 1e-10
+          nx = ddx / raw_dist; ny = ddy / raw_dist
+          dist = raw_dist - total_r
+          dist = 0.0 if dist < 0.0
+          pAx += ra * nx; pAy += ra * ny
+          pBx -= rb * nx; pBy -= rb * ny
+        else
+          nx = -dx; ny = -dy
+          nl = Math.sqrt(nx * nx + ny * ny)
+          if nl > 1e-10; nx /= nl; ny /= nl; else nx = 0.0; ny = 1.0; end
+          pAx += ra * nx; pAy += ra * ny
+          pBx -= rb * nx; pBy -= rb * ny
+          dist = 0.0
+        end
+      end
+
+      if cache
+        if i_a0 == i_a1 && i_b0 == i_b1
+          cache[:count] = 1; cache[:index_a0] = i_a0; cache[:index_b0] = i_b0
+        else
+          cache[:count] = 2
+          cache[:index_a0] = i_a0; cache[:index_b0] = i_b0
+          cache[:index_a1] = i_a1; cache[:index_b1] = i_b1
+        end
+      end
+
+      GJK_RESULT[:distance] = dist; GJK_RESULT[:raw_distance] = raw_dist; GJK_RESULT[:iterations] = iter
+      GJK_RESULT[:point_ax] = pAx; GJK_RESULT[:point_ay] = pAy
+      GJK_RESULT[:point_bx] = pBx; GJK_RESULT[:point_by] = pBy
+      GJK_RESULT[:normal_x] = nx; GJK_RESULT[:normal_y] = ny
+      GJK_RESULT
+    end
+
+    # Conservative advancement: sweep proxy_b along (tx,ty) toward proxy_a.
+    SHAPE_CAST_RESULT ||= { hit: false, fraction: 0.0, point_x: 0.0, point_y: 0.0, normal_x: 0.0, normal_y: 0.0 }
+
+    def shape_cast proxy_a, proxy_b, tx, ty, max_fraction = 1.0
+      ra = proxy_a[:radius]; rb = proxy_b[:radius]
+      total_r = ra + rb
+      slop = Physics::LINEAR_SLOP
+      target = total_r > slop ? total_r - slop : slop
+      target = slop if target < slop
+      tolerance = 0.25 * slop
+
+      fraction = 0.0
+      cache = { count: 0, index_a0: 0, index_b0: 0, index_a1: 0, index_b1: 0 }
+
+      # make shifted proxy for B at current fraction
+      shifted_b = { points_x: proxy_b[:points_x].dup, points_y: proxy_b[:points_y].dup,
+                    count: proxy_b[:count], radius: proxy_b[:radius] }
+
+      iter = 0
+      while iter < 20
+        r = shape_distance(proxy_a, shifted_b, cache)
+        dist = r[:raw_distance]
+
+        if dist < target + tolerance
+          SHAPE_CAST_RESULT[:hit] = true
+          SHAPE_CAST_RESULT[:normal_x] = r[:normal_x]; SHAPE_CAST_RESULT[:normal_y] = r[:normal_y]
+          if iter == 0
+            SHAPE_CAST_RESULT[:fraction] = 0.0
+            mid_x = (r[:point_ax] + r[:point_bx]) * 0.5; mid_y = (r[:point_ay] + r[:point_by]) * 0.5
+            SHAPE_CAST_RESULT[:point_x] = mid_x; SHAPE_CAST_RESULT[:point_y] = mid_y
+          else
+            SHAPE_CAST_RESULT[:fraction] = fraction
+            SHAPE_CAST_RESULT[:point_x] = r[:point_ax]; SHAPE_CAST_RESULT[:point_y] = r[:point_ay]
+          end
+          return SHAPE_CAST_RESULT
+        end
+
+        # approach rate
+        nx = r[:normal_x]; ny = r[:normal_y]
+        denom = tx * nx + ty * ny
+        return nil if denom >= 0.0  # moving apart
+
+        fraction += (target - dist) / denom
+        return nil if fraction >= max_fraction
+
+        # shift proxy B
+        i = 0
+        while i < proxy_b[:count]
+          shifted_b[:points_x][i] = proxy_b[:points_x][i] + fraction * tx
+          shifted_b[:points_y][i] = proxy_b[:points_y][i] + fraction * ty
+          i += 1
+        end
+        iter += 1
+      end
+      nil
+    end
+
+    # Time of impact between two sweeping shapes. state: :hit, :separated, :overlapped, :failed
+    TOI_RESULT ||= { state: :separated, fraction: 0.0, point_x: 0.0, point_y: 0.0, normal_x: 0.0, normal_y: 0.0 }
+    TOI_MAX_ITERS = 20
+    TOI_MAX_ROOT_ITERS = 50
+
+    # Pre-allocated world proxies for TOI (max 8 vertices covers all shape types)
+    TOI_WP_A ||= { points_x: Array.new(8, 0.0), points_y: Array.new(8, 0.0), count: 0, radius: 0.0 }
+    TOI_WP_B ||= { points_x: Array.new(8, 0.0), points_y: Array.new(8, 0.0), count: 0, radius: 0.0 }
+
+    def fill_world_proxy wp, proxy, tx, ty, cos_a, sin_a
+      spx = proxy[:points_x]; spy = proxy[:points_y]; n = proxy[:count]
+      wpx = wp[:points_x]; wpy = wp[:points_y]; i = 0
+      while i < n
+        lpx = spx[i]; lpy = spy[i]
+        wpx[i] = tx + cos_a * lpx - sin_a * lpy
+        wpy[i] = ty + sin_a * lpx + cos_a * lpy
+        i += 1
+      end
+      wp[:count] = n; wp[:radius] = proxy[:radius]
+    end
+
+    def time_of_impact proxy_a, proxy_b, sweep_a, sweep_b, max_fraction = 1.0
+      ra = proxy_a[:radius]; rb = proxy_b[:radius]
+      total_r = ra + rb
+      slop = Physics::LINEAR_SLOP
+      target = total_r > slop ? total_r - slop : slop
+      target = slop if target < slop
+      tolerance = 0.25 * slop
+
+      t1 = 0.0
+      cache = { count: 0, index_a0: 0, index_b0: 0, index_a1: 0, index_b1: 0 }
+      lca_x = sweep_a[:local_cx] || 0.0; lca_y = sweep_a[:local_cy] || 0.0
+      lcb_x = sweep_b[:local_cx] || 0.0; lcb_y = sweep_b[:local_cy] || 0.0
+
+      dist_iter = 0
+      while dist_iter < TOI_MAX_ITERS
+        # Inline sweep_transform + fill world proxies
+        omt = 1.0 - t1
+        xfa_x = omt * sweep_a[:c1x] + t1 * sweep_a[:c2x]; xfa_y = omt * sweep_a[:c1y] + t1 * sweep_a[:c2y]
+        ang = omt * sweep_a[:a1] + t1 * sweep_a[:a2]; xfa_c = Math.cos(ang); xfa_s = Math.sin(ang)
+        xfa_x -= xfa_c * lca_x - xfa_s * lca_y; xfa_y -= xfa_s * lca_x + xfa_c * lca_y
+        fill_world_proxy(TOI_WP_A, proxy_a, xfa_x, xfa_y, xfa_c, xfa_s)
+
+        xfb_x = omt * sweep_b[:c1x] + t1 * sweep_b[:c2x]; xfb_y = omt * sweep_b[:c1y] + t1 * sweep_b[:c2y]
+        ang = omt * sweep_b[:a1] + t1 * sweep_b[:a2]; xfb_c = Math.cos(ang); xfb_s = Math.sin(ang)
+        xfb_x -= xfb_c * lcb_x - xfb_s * lcb_y; xfb_y -= xfb_s * lcb_x + xfb_c * lcb_y
+        fill_world_proxy(TOI_WP_B, proxy_b, xfb_x, xfb_y, xfb_c, xfb_s)
+
+        r = shape_distance(TOI_WP_A, TOI_WP_B, cache)
+        dist = r[:raw_distance]
+
+        if dist <= 0.0
+          TOI_RESULT[:state] = :overlapped; TOI_RESULT[:fraction] = 0.0
+          TOI_RESULT[:point_x] = (r[:point_ax] + r[:point_bx]) * 0.5
+          TOI_RESULT[:point_y] = (r[:point_ay] + r[:point_by]) * 0.5
+          TOI_RESULT[:normal_x] = r[:normal_x]; TOI_RESULT[:normal_y] = r[:normal_y]
+          return TOI_RESULT
+        end
+
+        if dist < target + tolerance
+          TOI_RESULT[:state] = :hit; TOI_RESULT[:fraction] = t1
+          TOI_RESULT[:point_x] = (r[:point_ax] + r[:point_bx]) * 0.5
+          TOI_RESULT[:point_y] = (r[:point_ay] + r[:point_by]) * 0.5
+          TOI_RESULT[:normal_x] = r[:normal_x]; TOI_RESULT[:normal_y] = r[:normal_y]
+          return TOI_RESULT
+        end
+
+        sep_fn = make_separation_fn(proxy_a, proxy_b, sweep_a, sweep_b, cache, t1)
+
+        done = false
+        pushback = 0
+        t2 = max_fraction
+        while pushback < proxy_a[:count] + proxy_b[:count]
+          find_min_separation(sep_fn, t2)
+          s2 = MINSEP_RESULT[0]; idx_a = MINSEP_RESULT[1]; idx_b = MINSEP_RESULT[2]
+
+          if s2 > target + tolerance
+            TOI_RESULT[:state] = :separated; TOI_RESULT[:fraction] = max_fraction
+            done = true; break
+          end
+
+          if s2 > target - tolerance
+            t1 = t2; break
+          end
+
+          s1 = eval_separation(sep_fn, idx_a, idx_b, t1)
+
+          if s1 < target - tolerance
+            TOI_RESULT[:state] = :failed; TOI_RESULT[:fraction] = t1
+            done = true; break
+          end
+
+          if s1 <= target + tolerance
+            TOI_RESULT[:state] = :hit; TOI_RESULT[:fraction] = t1
+            # Reuse pre-allocated proxies for hit-point computation
+            omt2 = 1.0 - t1
+            x2 = omt2 * sweep_a[:c1x] + t1 * sweep_a[:c2x]; y2 = omt2 * sweep_a[:c1y] + t1 * sweep_a[:c2y]
+            a2 = omt2 * sweep_a[:a1] + t1 * sweep_a[:a2]; c2 = Math.cos(a2); s2h = Math.sin(a2)
+            x2 -= c2 * lca_x - s2h * lca_y; y2 -= s2h * lca_x + c2 * lca_y
+            fill_world_proxy(TOI_WP_A, proxy_a, x2, y2, c2, s2h)
+            x2 = omt2 * sweep_b[:c1x] + t1 * sweep_b[:c2x]; y2 = omt2 * sweep_b[:c1y] + t1 * sweep_b[:c2y]
+            a2 = omt2 * sweep_b[:a1] + t1 * sweep_b[:a2]; c2 = Math.cos(a2); s2h = Math.sin(a2)
+            x2 -= c2 * lcb_x - s2h * lcb_y; y2 -= s2h * lcb_x + c2 * lcb_y
+            fill_world_proxy(TOI_WP_B, proxy_b, x2, y2, c2, s2h)
+            r2 = shape_distance(TOI_WP_A, TOI_WP_B)
+            TOI_RESULT[:point_x] = (r2[:point_ax] + r2[:point_bx]) * 0.5
+            TOI_RESULT[:point_y] = (r2[:point_ay] + r2[:point_by]) * 0.5
+            TOI_RESULT[:normal_x] = r2[:normal_x]; TOI_RESULT[:normal_y] = r2[:normal_y]
+            done = true; break
+          end
+
+          # root finding: bisection + false position hybrid
+          a1 = t1; a2 = t2; root_iter = 0
+          while root_iter < TOI_MAX_ROOT_ITERS
+            if root_iter & 1 == 1
+              t = a1 + (target - s1) * (a2 - a1) / (s2 - s1)
+            else
+              t = 0.5 * (a1 + a2)
+            end
+            s = eval_separation(sep_fn, idx_a, idx_b, t)
+            if (s - target).abs < tolerance
+              t2 = t; break
+            end
+            if s > target
+              a1 = t; s1 = s
+            else
+              a2 = t; s2 = s
+            end
+            root_iter += 1
+          end
+          pushback += 1
+        end
+        break if done
+        dist_iter += 1
+      end
+
+      if dist_iter >= TOI_MAX_ITERS
+        TOI_RESULT[:state] = :failed; TOI_RESULT[:fraction] = t1
+      end
+      TOI_RESULT
+    end
+
+    def make_separation_fn proxy_a, proxy_b, sweep_a, sweep_b, cache, t1
+      # Inline sweep_transform for A
+      omt = 1.0 - t1
+      xfa_x = omt * sweep_a[:c1x] + t1 * sweep_a[:c2x]; xfa_y = omt * sweep_a[:c1y] + t1 * sweep_a[:c2y]
+      ang_a = omt * sweep_a[:a1] + t1 * sweep_a[:a2]; xfa_c = Math.cos(ang_a); xfa_s = Math.sin(ang_a)
+      lca_x = sweep_a[:local_cx] || 0.0; lca_y = sweep_a[:local_cy] || 0.0
+      xfa_x -= xfa_c * lca_x - xfa_s * lca_y; xfa_y -= xfa_s * lca_x + xfa_c * lca_y
+      # Inline sweep_transform for B
+      xfb_x = omt * sweep_b[:c1x] + t1 * sweep_b[:c2x]; xfb_y = omt * sweep_b[:c1y] + t1 * sweep_b[:c2y]
+      ang_b = omt * sweep_b[:a1] + t1 * sweep_b[:a2]; xfb_c = Math.cos(ang_b); xfb_s = Math.sin(ang_b)
+      lcb_x = sweep_b[:local_cx] || 0.0; lcb_y = sweep_b[:local_cy] || 0.0
+      xfb_x -= xfb_c * lcb_x - xfb_s * lcb_y; xfb_y -= xfb_s * lcb_x + xfb_c * lcb_y
+
+      count = cache[:count]
+      fn = { proxy_a: proxy_a, proxy_b: proxy_b, sweep_a: sweep_a, sweep_b: sweep_b,
+             type: :points, local_px: 0.0, local_py: 0.0, axis_x: 0.0, axis_y: 0.0 }
+
+      if count == 1
+        ia = cache[:index_a0]; ib = cache[:index_b0]
+        lp_x = proxy_a[:points_x][ia]; lp_y = proxy_a[:points_y][ia]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        lp_x = proxy_b[:points_x][ib]; lp_y = proxy_b[:points_y][ib]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        dx = wp_bx - wp_ax; dy = wp_by - wp_ay
+        dl = Math.sqrt(dx * dx + dy * dy)
+        if dl > 1e-10; fn[:axis_x] = dx / dl; fn[:axis_y] = dy / dl
+        else fn[:axis_x] = 1.0; fn[:axis_y] = 0.0; end
+        fn[:type] = :points
+      elsif cache[:index_a0] == cache[:index_a1]
+        fn[:type] = :face_b
+        ib0 = cache[:index_b0]; ib1 = cache[:index_b1]
+        lpx0 = proxy_b[:points_x][ib0]; lpy0 = proxy_b[:points_y][ib0]
+        lpx1 = proxy_b[:points_x][ib1]; lpy1 = proxy_b[:points_y][ib1]
+        ex = lpx1 - lpx0; ey = lpy1 - lpy0
+        el = Math.sqrt(ex * ex + ey * ey)
+        if el > 1e-10; fn[:axis_x] = ey / el; fn[:axis_y] = -ex / el
+        else fn[:axis_x] = 1.0; fn[:axis_y] = 0.0; end
+        fn[:local_px] = (lpx0 + lpx1) * 0.5; fn[:local_py] = (lpy0 + lpy1) * 0.5
+        lp_x = fn[:local_px]; lp_y = fn[:local_py]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        lp_x = proxy_a[:points_x][cache[:index_a0]]; lp_y = proxy_a[:points_y][cache[:index_a0]]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        nw_x = xfb_c * fn[:axis_x] - xfb_s * fn[:axis_y]; nw_y = xfb_s * fn[:axis_x] + xfb_c * fn[:axis_y]
+        if (wp_ax - wp_bx) * nw_x + (wp_ay - wp_by) * nw_y < 0
+          fn[:axis_x] = -fn[:axis_x]; fn[:axis_y] = -fn[:axis_y]
+        end
+      else
+        fn[:type] = :face_a
+        ia0 = cache[:index_a0]; ia1 = cache[:index_a1]
+        lpx0 = proxy_a[:points_x][ia0]; lpy0 = proxy_a[:points_y][ia0]
+        lpx1 = proxy_a[:points_x][ia1]; lpy1 = proxy_a[:points_y][ia1]
+        ex = lpx1 - lpx0; ey = lpy1 - lpy0
+        el = Math.sqrt(ex * ex + ey * ey)
+        if el > 1e-10; fn[:axis_x] = ey / el; fn[:axis_y] = -ex / el
+        else fn[:axis_x] = 1.0; fn[:axis_y] = 0.0; end
+        fn[:local_px] = (lpx0 + lpx1) * 0.5; fn[:local_py] = (lpy0 + lpy1) * 0.5
+        lp_x = fn[:local_px]; lp_y = fn[:local_py]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        lp_x = proxy_b[:points_x][cache[:index_b0]]; lp_y = proxy_b[:points_y][cache[:index_b0]]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        nw_x = xfa_c * fn[:axis_x] - xfa_s * fn[:axis_y]; nw_y = xfa_s * fn[:axis_x] + xfa_c * fn[:axis_y]
+        if (wp_bx - wp_ax) * nw_x + (wp_by - wp_ay) * nw_y < 0
+          fn[:axis_x] = -fn[:axis_x]; fn[:axis_y] = -fn[:axis_y]
+        end
+      end
+      fn
+    end
+
+    # Writes [sep, idx_a, idx_b] into MINSEP_RESULT to avoid array allocation
+    MINSEP_RESULT ||= [0.0, 0, 0]
+
+    def find_min_separation fn, t
+      # Inline sweep_transform A
+      sw = fn[:sweep_a]; omt = 1.0 - t
+      xfa_x = omt * sw[:c1x] + t * sw[:c2x]; xfa_y = omt * sw[:c1y] + t * sw[:c2y]
+      ang = omt * sw[:a1] + t * sw[:a2]; xfa_c = Math.cos(ang); xfa_s = Math.sin(ang)
+      lc = sw[:local_cx] || 0.0; ls = sw[:local_cy] || 0.0
+      xfa_x -= xfa_c * lc - xfa_s * ls; xfa_y -= xfa_s * lc + xfa_c * ls
+      # Inline sweep_transform B
+      sw = fn[:sweep_b]
+      xfb_x = omt * sw[:c1x] + t * sw[:c2x]; xfb_y = omt * sw[:c1y] + t * sw[:c2y]
+      ang = omt * sw[:a1] + t * sw[:a2]; xfb_c = Math.cos(ang); xfb_s = Math.sin(ang)
+      lc = sw[:local_cx] || 0.0; ls = sw[:local_cy] || 0.0
+      xfb_x -= xfb_c * lc - xfb_s * ls; xfb_y -= xfb_s * lc + xfb_c * ls
+
+      pa = fn[:proxy_a]; pb = fn[:proxy_b]
+      ax = fn[:axis_x]; ay = fn[:axis_y]
+
+      if fn[:type] == :points
+        # Inline inv_rotate_vec for A and B
+        ia = support(pa, xfa_c * ax + xfa_s * ay, -xfa_s * ax + xfa_c * ay)
+        ib = support(pb, -(xfb_c * ax + xfb_s * ay), -(-xfb_s * ax + xfb_c * ay))
+        lp_x = pa[:points_x][ia]; lp_y = pa[:points_y][ia]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        lp_x = pb[:points_x][ib]; lp_y = pb[:points_y][ib]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        MINSEP_RESULT[0] = (wp_bx - wp_ax) * ax + (wp_by - wp_ay) * ay
+        MINSEP_RESULT[1] = ia; MINSEP_RESULT[2] = ib
+      elsif fn[:type] == :face_a
+        nw_x = xfa_c * ax - xfa_s * ay; nw_y = xfa_s * ax + xfa_c * ay
+        lp_x = fn[:local_px]; lp_y = fn[:local_py]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        ib = support(pb, -(xfb_c * nw_x + xfb_s * nw_y), -(-xfb_s * nw_x + xfb_c * nw_y))
+        lp_x = pb[:points_x][ib]; lp_y = pb[:points_y][ib]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        MINSEP_RESULT[0] = (wp_bx - wp_ax) * nw_x + (wp_by - wp_ay) * nw_y
+        MINSEP_RESULT[1] = -1; MINSEP_RESULT[2] = ib
+      else # face_b
+        nw_x = xfb_c * ax - xfb_s * ay; nw_y = xfb_s * ax + xfb_c * ay
+        lp_x = fn[:local_px]; lp_y = fn[:local_py]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        ia = support(pa, -(xfa_c * nw_x + xfa_s * nw_y), -(-xfa_s * nw_x + xfa_c * nw_y))
+        lp_x = pa[:points_x][ia]; lp_y = pa[:points_y][ia]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        MINSEP_RESULT[0] = (wp_ax - wp_bx) * nw_x + (wp_ay - wp_by) * nw_y
+        MINSEP_RESULT[1] = ia; MINSEP_RESULT[2] = -1
+      end
+      MINSEP_RESULT
+    end
+
+    def eval_separation fn, idx_a, idx_b, t
+      # Inline sweep_transform A
+      sw = fn[:sweep_a]; omt = 1.0 - t
+      xfa_x = omt * sw[:c1x] + t * sw[:c2x]; xfa_y = omt * sw[:c1y] + t * sw[:c2y]
+      ang = omt * sw[:a1] + t * sw[:a2]; xfa_c = Math.cos(ang); xfa_s = Math.sin(ang)
+      lc = sw[:local_cx] || 0.0; ls = sw[:local_cy] || 0.0
+      xfa_x -= xfa_c * lc - xfa_s * ls; xfa_y -= xfa_s * lc + xfa_c * ls
+      # Inline sweep_transform B
+      sw = fn[:sweep_b]
+      xfb_x = omt * sw[:c1x] + t * sw[:c2x]; xfb_y = omt * sw[:c1y] + t * sw[:c2y]
+      ang = omt * sw[:a1] + t * sw[:a2]; xfb_c = Math.cos(ang); xfb_s = Math.sin(ang)
+      lc = sw[:local_cx] || 0.0; ls = sw[:local_cy] || 0.0
+      xfb_x -= xfb_c * lc - xfb_s * ls; xfb_y -= xfb_s * lc + xfb_c * ls
+
+      pa = fn[:proxy_a]; pb = fn[:proxy_b]
+
+      if fn[:type] == :points
+        lp_x = pa[:points_x][idx_a]; lp_y = pa[:points_y][idx_a]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        lp_x = pb[:points_x][idx_b]; lp_y = pb[:points_y][idx_b]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        (wp_bx - wp_ax) * fn[:axis_x] + (wp_by - wp_ay) * fn[:axis_y]
+      elsif fn[:type] == :face_a
+        nw_x = xfa_c * fn[:axis_x] - xfa_s * fn[:axis_y]
+        nw_y = xfa_s * fn[:axis_x] + xfa_c * fn[:axis_y]
+        lp_x = fn[:local_px]; lp_y = fn[:local_py]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        lp_x = pb[:points_x][idx_b]; lp_y = pb[:points_y][idx_b]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        (wp_bx - wp_ax) * nw_x + (wp_by - wp_ay) * nw_y
+      else # face_b
+        nw_x = xfb_c * fn[:axis_x] - xfb_s * fn[:axis_y]
+        nw_y = xfb_s * fn[:axis_x] + xfb_c * fn[:axis_y]
+        lp_x = fn[:local_px]; lp_y = fn[:local_py]
+        wp_bx = xfb_c * lp_x - xfb_s * lp_y + xfb_x; wp_by = xfb_s * lp_x + xfb_c * lp_y + xfb_y
+        lp_x = pa[:points_x][idx_a]; lp_y = pa[:points_y][idx_a]
+        wp_ax = xfa_c * lp_x - xfa_s * lp_y + xfa_x; wp_ay = xfa_s * lp_x + xfa_c * lp_y + xfa_y
+        (wp_ax - wp_bx) * nw_x + (wp_ay - wp_by) * nw_y
+      end
     end
   end
 end

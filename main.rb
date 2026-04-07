@@ -140,12 +140,22 @@ def tick args
     return
   end
 
+  if args.inputs.keyboard.key_down.q && args.inputs.keyboard.shift
+    if args.state.mode == :queries
+      args.state.mode = :game; setup_level args
+    else
+      args.state.mode = :queries; setup_query_demo args
+    end
+    return
+  end
+
   case args.state.mode
   when :sandbox   then tick_sandbox args
   when :joints    then tick_joints_demo args
   when :stress    then StressTest.tick_stress args
   when :callbacks then tick_callback_demo args
   when :benchmark then BenchmarkTest.tick_bench args
+  when :queries   then tick_query_demo args
   else tick_game args
   end
 rescue => e
@@ -384,7 +394,7 @@ def tick_game args
   args.outputs.labels << { x: 640, y: 400, text: "YOU WIN!", size_px: 60, anchor_x: 0.5, anchor_y: 0.5, r: 0, g: 150, b: 0 } if gs == :win
   args.outputs.labels << { x: 640, y: 400, text: "NO MORE DRAGONS!", size_px: 50, anchor_x: 0.5, anchor_y: 0.5, r: 200, g: 0, b: 0 } if gs == :lose
   args.outputs.labels << { x: 640, y: 350, text: "Press R to restart", size_px: 24, anchor_x: 0.5, anchor_y: 0.5 } if gs == :win || gs == :lose
-  args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  [#{gs}]  R=restart  Shift+T=sandbox  Shift+J=joints  Shift+C=callbacks"
+  args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  [#{gs}]  R=restart  Shift+T=sandbox  Shift+J=joints  Shift+C=callbacks  Shift+Q=queries"
 end
 
 # Sandbox Mode
@@ -1201,15 +1211,14 @@ def tick_joints_demo args
   # wheel demo: arrow keys control motor + direct chassis force
   if args.state.joint_scene == 4 && args.state.wheel_chassis
     chassis = args.state.wheel_chassis
-    if args.inputs.right || args.inputs.left
-      dir = args.inputs.left_right_perc
+    dir = args.inputs.left_right_perc
+    if dir != 0
       spd = -dir * 200.0
       world[:joints].each do |joint|
         next unless joint[:type] == :wheel
         joint[:motor_speed] = spd
       end
       chassis[:fx] += dir * 3000000.0
-      # wake all car bodies so motor + friction take effect
       world[:bodies].each do |body|
         next unless body[:type] == :dynamic && body[:sleeping]
         Physics::Islands.wake_body world, body
@@ -1326,4 +1335,311 @@ def tick_joints_demo args
   args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  Bodies: #{dc}  Joints: #{jc}  Sleep: #{sc}"
   args.outputs.debug << "1-7=scene  R=reset  Click=ball  Shift+J=game"
   args.outputs.debug << "Arrows=drive" if args.state.joint_scene == 4
+end
+
+QUERY_MODES = [:raycast, :aabb, :point, :shapecast, :toi]
+QUERY_SHAPE_COLORS_LIST = %w[red orange yellow green blue indigo violet]
+QUERY_MODE_NAMES = {
+  raycast:   '1: Ray Cast',
+  aabb:      '2: AABB Overlap',
+  point:     '3: Point Query',
+  shapecast: '4: Shape Cast',
+  toi:       '5: Time of Impact'
+}
+
+def setup_query_demo args
+  world = Physics.create_world
+  world[:gravity_x] = 0.0; world[:gravity_y] = 0.0
+  args.state.world = world
+  args.state.query_mode_idx = 0
+  args.state.toi_t = 0.0
+  args.state.toi_dir = 1
+
+  floor = Physics.create_body x: 640, y: 0, type: :static
+  Physics.add_body world, floor
+  Physics.add_shape world, Physics.create_box(body: floor, w: 1280, h: 20, friction: 0.5)
+
+  ceiling = Physics.create_body x: 640, y: 720, type: :static
+  Physics.add_body world, ceiling
+  Physics.add_shape world, Physics.create_box(body: ceiling, w: 1280, h: 20, friction: 0.5)
+
+  lwall = Physics.create_body x: 0, y: 360, type: :static
+  Physics.add_body world, lwall
+  Physics.add_shape world, Physics.create_box(body: lwall, w: 20, h: 720, friction: 0.5)
+
+  rwall = Physics.create_body x: 1280, y: 360, type: :static
+  Physics.add_body world, rwall
+  Physics.add_shape world, Physics.create_box(body: rwall, w: 20, h: 720, friction: 0.5)
+
+  shapes_data = [
+    { x: 200, y: 560, type: :circle, r: 40 },
+    { x: 500, y: 580, type: :circle, r: 30 },
+    { x: 900, y: 540, type: :circle, r: 50 },
+    { x: 1100, y: 600, type: :circle, r: 35 },
+    { x: 300, y: 420, type: :box, w: 80, h: 60, angle: 0.3 },
+    { x: 650, y: 450, type: :box, w: 70, h: 70, angle: -0.4 },
+    { x: 950, y: 420, type: :box, w: 100, h: 50, angle: 0.6 },
+    { x: 150, y: 260, type: :capsule, x1: -50, y1: 0, x2: 50, y2: 0, r: 20, angle: 0.5 },
+    { x: 500, y: 280, type: :capsule, x1: 0, y1: -40, x2: 0, y2: 40, r: 18, angle: 0.0 },
+    { x: 800, y: 300, type: :capsule, x1: -60, y1: 0, x2: 60, y2: 0, r: 22, angle: -0.3 },
+    { x: 370, y: 150, type: :polygon,
+      verts: [[-50, -30], [0, -55], [50, -30], [40, 30], [-40, 30]], angle: 0.2 },
+    { x: 700, y: 170, type: :polygon,
+      verts: [[-40, -40], [40, -40], [55, 0], [40, 40], [-40, 40], [-55, 0]], angle: -0.1 },
+    { x: 1050, y: 200, type: :polygon,
+      verts: [[-30, -50], [30, -50], [50, 20], [0, 50], [-50, 20]], angle: 0.4 }
+  ]
+  args.state.query_shapes = []
+  ci = 0
+  shapes_data.each do |d|
+    body = Physics.create_body x: d[:x], y: d[:y], type: :static, angle: d[:angle] || 0.0
+    Physics.add_body world, body
+    shape = case d[:type]
+            when :circle  then Physics.create_circle(body: body, radius: d[:r], friction: 0.6)
+            when :box     then Physics.create_box(body: body, w: d[:w], h: d[:h], friction: 0.6)
+            when :capsule then Physics.create_capsule(body: body, x1: d[:x1], y1: d[:y1], x2: d[:x2], y2: d[:y2], radius: d[:r], friction: 0.6)
+            when :polygon
+              flat = d[:verts].flatten
+              Physics.create_polygon(body: body, vertices: flat, friction: 0.6)
+            end
+    Physics.add_shape world, shape
+    Physics.transform_shapes world
+    color = QUERY_SHAPE_COLORS_LIST[ci % QUERY_SHAPE_COLORS_LIST.length]
+    args.state.query_shapes << { body: body, shape: shape, color: color }
+    ci += 1
+  end
+
+  args.state.toi_body_a = { shape_type: :circle, radius: 25 }
+  args.state.toi_body_b = { shape_type: :box, w: 50, h: 50 }
+end
+
+def tick_query_demo args
+  world = args.state.world
+
+  if args.inputs.keyboard.key_down.r
+    args.state.mode = :queries; setup_query_demo args; return
+  end
+  args.state.query_mode_idx = 0 if args.inputs.keyboard.key_down.one
+  args.state.query_mode_idx = 1 if args.inputs.keyboard.key_down.two
+  args.state.query_mode_idx = 2 if args.inputs.keyboard.key_down.three
+  args.state.query_mode_idx = 3 if args.inputs.keyboard.key_down.four
+  args.state.query_mode_idx = 4 if args.inputs.keyboard.key_down.five
+
+  Physics.tick world
+
+  mode = QUERY_MODES[args.state.query_mode_idx]
+  mx = args.inputs.mouse.x.to_f
+  my = args.inputs.mouse.y.to_f
+  outs = args.outputs
+
+  hit_shapes = {}
+  case mode
+
+  when :raycast
+    ox = 20.0; oy = my
+    dir_x = 1.0; dir_y = 0.0
+    result = Physics.cast_ray_closest(world, ox, oy, dir_x, dir_y, 1240.0)
+    if result
+      hit_shapes[result[:shape].object_id] = 'red'
+      fx = result[:point_x]; fy = result[:point_y]
+      outs.lines << { x: ox, y: oy, x2: fx, y2: fy, r: 255, g: 80, b: 80, a: 200 }
+      outs.lines << { x: fx, y: fy, x2: fx + result[:normal_x] * 40, y2: fy + result[:normal_y] * 40,
+                      r: 255, g: 220, b: 0 }
+      outs.sprites << { x: fx - 6, y: fy - 6, w: 12, h: 12, path: 'sprites/circle/yellow.png' }
+      outs.labels << { x: fx + 15, y: fy + 10,
+                       text: "t=#{result[:fraction].round(3)}  n=(#{result[:normal_x].round(2)},#{result[:normal_y].round(2)})",
+                       size_px: 14, r: 255, g: 220, b: 0 }
+    else
+      outs.lines << { x: ox, y: oy, x2: 1260.0, y2: oy, r: 255, g: 80, b: 80, a: 100 }
+    end
+    Physics.cast_ray(world, ox, oy, dir_x, dir_y, 1240.0) do |_s, _b, px, py, _nx, _ny, frac|
+      outs.sprites << { x: px - 3, y: py - 3, w: 6, h: 6, path: 'sprites/circle/white.png', a: 120 }
+      frac  # don't clip - show all
+    end
+
+  when :aabb
+    hw = 80.0; hh = 60.0
+    x0 = mx - hw; y0 = my - hh; x1 = mx + hw; y1 = my + hh
+    outs.borders << { x: x0, y: y0, w: hw * 2, h: hh * 2, r: 255, g: 220, b: 0, a: 200 }
+    Physics.overlap_aabb(world, x0, y0, x1, y1) do |shape, _body|
+      hit_shapes[shape.object_id] = 'yellow'
+      true
+    end
+
+  when :point
+    Physics.overlap_point(world, mx, my) do |shape, _body|
+      hit_shapes[shape.object_id] = 'blue'
+      true
+    end
+    outs.sprites << { x: mx - 5, y: my - 5, w: 10, h: 10, path: 'sprites/circle/white.png' }
+
+  when :shapecast
+    args.state.sc_ox ||= 60.0; args.state.sc_oy ||= 360.0
+    args.state.sc_ox += args.inputs.left_right_perc * 8.0
+    args.state.sc_oy += args.inputs.up_down_perc * 8.0
+    ox = args.state.sc_ox; oy = args.state.sc_oy
+    tx = mx - ox; ty = my - oy
+    tl = Math.sqrt(tx * tx + ty * ty)
+    if tl > 1.0
+      tx /= tl; ty /= tl
+    end
+    sweep_r = 20.0
+    sweeper_body = { x: ox, y: oy, angle: 0.0 }
+    sweeper_shape = { type: :circle, offset_x: 0.0, offset_y: 0.0, radius: sweep_r }
+    result = Physics.cast_shape(world, sweeper_shape, sweeper_body, tx * tl, ty * tl)
+    if result
+      hit_shapes[result[:shape].object_id] = 'green'
+      frac = result[:fraction]
+      end_x = ox + tx * tl * frac; end_y = oy + ty * tl * frac
+      outs.sprites << { x: end_x - sweep_r, y: end_y - sweep_r, w: sweep_r * 2, h: sweep_r * 2,
+                        path: 'sprites/circle/green.png', a: 180 }
+      outs.lines << { x: end_x, y: end_y,
+                      x2: end_x + result[:normal_x] * 40,
+                      y2: end_y + result[:normal_y] * 40,
+                      r: 0, g: 255, b: 120 }
+      outs.labels << { x: end_x + 15, y: end_y + 10,
+                       text: "t=#{frac.round(3)}",
+                       size_px: 14, r: 0, g: 255, b: 120 }
+    else
+      end_x = mx; end_y = my
+      outs.sprites << { x: end_x - sweep_r, y: end_y - sweep_r, w: sweep_r * 2, h: sweep_r * 2,
+                        path: 'sprites/circle/white.png', a: 80 }
+    end
+    outs.lines << { x: ox - ty * sweep_r, y: oy + tx * sweep_r,
+                    x2: end_x - ty * sweep_r, y2: end_y + tx * sweep_r,
+                    r: 80, g: 200, b: 80, a: 120 }
+    outs.lines << { x: ox + ty * sweep_r, y: oy - tx * sweep_r,
+                    x2: end_x + ty * sweep_r, y2: end_y - tx * sweep_r,
+                    r: 80, g: 200, b: 80, a: 120 }
+    outs.sprites << { x: ox - sweep_r, y: oy - sweep_r, w: sweep_r * 2, h: sweep_r * 2,
+                      path: 'sprites/circle/green.png', a: 200 }
+
+  when :toi
+    t = args.state.toi_t
+    t += 0.01 * args.state.toi_dir
+    t = 1.0 if t > 1.0; t = 0.0 if t < 0.0
+    args.state.toi_t = t
+    if t >= 1.0; args.state.toi_dir = -1
+    elsif t <= 0.0; args.state.toi_dir = 1; end
+
+    a_r = 30.0
+    a_c1x = 100.0; a_c1y = 360.0; a_c2x = 900.0; a_c2y = 360.0
+    b_hw = 40.0; b_hh = 40.0
+    b_c1x = 1100.0; b_c1y = 360.0; b_c2x = 300.0; b_c2y = 360.0
+
+    proxy_a = { points_x: [0.0], points_y: [0.0], count: 1, radius: a_r }
+    proxy_b = { points_x: [-b_hw, b_hw, b_hw, -b_hw], points_y: [-b_hh, -b_hh, b_hh, b_hh], count: 4, radius: 0.0 }
+
+    sweep_a = { c1x: a_c1x, c1y: a_c1y, c2x: a_c2x, c2y: a_c2y, a1: 0.0, a2: 0.0 }
+    sweep_b = { c1x: b_c1x, c1y: b_c1y, c2x: b_c2x, c2y: b_c2y, a1: 0.0, a2: 0.0 }
+
+    toi_result = Physics::Collide.time_of_impact(proxy_a, proxy_b, sweep_a, sweep_b)
+
+    outs.lines << { x: a_c1x, y: a_c1y, x2: a_c2x, y2: a_c2y, r: 100, g: 100, b: 255, a: 60 }
+    outs.lines << { x: b_c1x, y: b_c1y, x2: b_c2x, y2: b_c2y, r: 255, g: 100, b: 100, a: 60 }
+    ax = a_c1x + t * (a_c2x - a_c1x); ay = a_c1y + t * (a_c2y - a_c1y)
+    bx = b_c1x + t * (b_c2x - b_c1x); by = b_c1y + t * (b_c2y - b_c1y)
+
+    toi_frac = toi_result[:fraction]
+    toi_state = toi_result[:state]
+
+    if toi_state == :hit
+      iax = a_c1x + toi_frac * (a_c2x - a_c1x); iay = a_c1y + toi_frac * (a_c2y - a_c1y)
+      ibx = b_c1x + toi_frac * (b_c2x - b_c1x); iby = b_c1y + toi_frac * (b_c2y - b_c1y)
+      outs.sprites << { x: iax - a_r, y: iay - a_r, w: a_r * 2, h: a_r * 2, path: 'sprites/circle/yellow.png', a: 60 }
+      outs.sprites << { x: ibx - b_hw, y: iby - b_hh, w: b_hw * 2, h: b_hh * 2, path: 'sprites/square/yellow.png', a: 60 }
+      outs.lines << { x: toi_result[:point_x], y: toi_result[:point_y],
+                      x2: toi_result[:point_x] + toi_result[:normal_x] * 50,
+                      y2: toi_result[:point_y] + toi_result[:normal_y] * 50,
+                      r: 255, g: 220, b: 0 }
+    end
+
+    a_color = (toi_state == :hit && t >= toi_frac) ? 'red' : 'blue'
+    outs.sprites << { x: ax - a_r, y: ay - a_r, w: a_r * 2, h: a_r * 2, path: "sprites/circle/#{a_color}.png" }
+    b_color = (toi_state == :hit && t >= toi_frac) ? 'red' : 'orange'
+    outs.sprites << { x: bx - b_hw, y: by - b_hh, w: b_hw * 2, h: b_hh * 2, path: "sprites/square/#{b_color}.png" }
+
+    outs.labels << { x: 640, y: 680, text: "ToI: state=#{toi_state}  t=#{toi_frac.round(4)}  (shapes turn red at contact)",
+                     size_px: 16, r: 255, g: 220, b: 0, anchor_x: 0.5 }
+    outs.labels << { x: 640, y: 654, text: "Animation t=#{t.round(3)}",
+                     size_px: 14, r: 200, g: 200, b: 200, anchor_x: 0.5 }
+  end
+
+  args.state.query_shapes.each do |entry|
+    body = entry[:body]; shape = entry[:shape]
+    base_color = entry[:color]
+    hl = hit_shapes[shape.object_id]
+    color = hl || base_color
+    alpha = hl ? 255 : 180
+    draw_query_shape outs, shape, body, color, alpha
+  end
+
+  mode_name = QUERY_MODE_NAMES[mode] || mode.to_s
+  outs.labels << { x: 640, y: 715, text: mode_name, size_px: 16,
+                   r: 220, g: 220, b: 255, anchor_x: 0.5 }
+  outs.debug << "FPS: #{args.gtk.current_framerate.to_i}  1-5=switch mode  R=reset  Shift+Q=game"
+end
+
+def draw_query_shape outs, shape, body, color, alpha = 255
+  ad = body[:angle] * DEG
+  case shape[:type]
+  when :circle
+    r = shape[:radius]; d = r * 2
+    cx = body[:x] + shape[:offset_x]; cy = body[:y] + shape[:offset_y]
+    outs.sprites << { x: cx - r, y: cy - r, w: d, h: d,
+                      path: "sprites/circle/#{color}.png", a: alpha }
+  when :polygon
+    wv = shape[:world_vertices]; c = shape[:count]
+    return unless wv
+    # fill via fan triangles
+    vi = 0
+    lv = shape[:vertices]
+    lx0 = 1e18; lx1 = -1e18; ly0 = 1e18; ly1 = -1e18; vi2 = 0
+    while vi2 < c
+      vx = lv[vi2 * 2]; vy = lv[vi2 * 2 + 1]
+      lx0 = vx if vx < lx0; lx1 = vx if vx > lx1
+      ly0 = vy if vy < ly0; ly1 = vy if vy > ly1
+      vi2 += 1
+    end
+    lbw = lx1 - lx0; lbh = ly1 - ly0
+    uw = 80.0 / (lbw < 1 ? 1.0 : lbw); uh = 80.0 / (lbh < 1 ? 1.0 : lbh)
+    wcx = 0.0; wcy = 0.0; vi2 = 0
+    while vi2 < c; wcx += wv[vi2 * 2]; wcy += wv[vi2 * 2 + 1]; vi2 += 1; end
+    wcx /= c; wcy /= c
+    vi = 0
+    while vi < c
+      ni = (vi + 1) % c; vi_2 = vi * 2; ni_2 = ni * 2
+      outs.sprites << { x: wcx, y: wcy, x2: wv[vi_2], y2: wv[vi_2 + 1],
+                        x3: wv[ni_2], y3: wv[ni_2 + 1],
+                        source_x: 40 - lx0 * uw, source_y: 40 - ly0 * uh,
+                        source_x2: (lv[vi_2] - lx0) * uw, source_y2: (lv[vi_2 + 1] - ly0) * uh,
+                        source_x3: (lv[ni_2] - lx0) * uw, source_y3: (lv[ni_2 + 1] - ly0) * uh,
+                        path: "sprites/square/#{color}.png", a: alpha }
+      vi += 1
+    end
+    # outline
+    vi = 0
+    while vi < c
+      ni = (vi + 1) % c; vi_2 = vi * 2; ni_2 = ni * 2
+      outs.lines << { x: wv[vi_2], y: wv[vi_2 + 1], x2: wv[ni_2], y2: wv[ni_2 + 1],
+                      r: 255, g: 255, b: 255, a: 80 }
+      vi += 1
+    end
+  when :capsule
+    ca = Math.cos(body[:angle]); sa_v = Math.sin(body[:angle])
+    bx = body[:x]; by = body[:y]; r = shape[:radius]; d = r * 2
+    w1x = bx + ca * shape[:x1] - sa_v * shape[:y1]
+    w1y = by + sa_v * shape[:x1] + ca * shape[:y1]
+    w2x = bx + ca * shape[:x2] - sa_v * shape[:y2]
+    w2y = by + sa_v * shape[:x2] + ca * shape[:y2]
+    outs.sprites << { x: w1x - r, y: w1y - r, w: d, h: d, path: "sprites/circle/#{color}.png", a: alpha }
+    outs.sprites << { x: w2x - r, y: w2y - r, w: d, h: d, path: "sprites/circle/#{color}.png", a: alpha }
+    sl = Math.sqrt((w2x - w1x)**2 + (w2y - w1y)**2)
+    seg_a = Math.atan2(w2y - w1y, w2x - w1x) * DEG
+    outs.sprites << { x: (w1x + w2x) * 0.5 - sl * 0.5, y: (w1y + w2y) * 0.5 - r,
+                      w: sl, h: d, path: "sprites/square/#{color}.png", a: alpha, angle: seg_a }
+  when :segment
+    outs.lines << { x: shape[:wx1], y: shape[:wy1], x2: shape[:wx2], y2: shape[:wy2],
+                    r: 255, g: 255, b: 100, a: alpha }
+  end
 end
