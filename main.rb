@@ -149,6 +149,15 @@ def tick args
     return
   end
 
+  if args.inputs.keyboard.key_down.p && args.inputs.keyboard.shift
+    if args.state.mode == :sprites
+      args.state.mode = :game; setup_level args
+    else
+      args.state.mode = :sprites; setup_sprite_demo args
+    end
+    return
+  end
+
   case args.state.mode
   when :sandbox   then tick_sandbox args
   when :joints    then tick_joints_demo args
@@ -156,6 +165,7 @@ def tick args
   when :callbacks then tick_callback_demo args
   when :benchmark then BenchmarkTest.tick_bench args
   when :queries   then tick_query_demo args
+  when :sprites   then tick_sprite_demo args
   else tick_game args
   end
 rescue => e
@@ -394,7 +404,7 @@ def tick_game args
   args.outputs.labels << { x: 640, y: 400, text: "YOU WIN!", size_px: 60, anchor_x: 0.5, anchor_y: 0.5, r: 0, g: 150, b: 0 } if gs == :win
   args.outputs.labels << { x: 640, y: 400, text: "NO MORE DRAGONS!", size_px: 50, anchor_x: 0.5, anchor_y: 0.5, r: 200, g: 0, b: 0 } if gs == :lose
   args.outputs.labels << { x: 640, y: 350, text: "Press R to restart", size_px: 24, anchor_x: 0.5, anchor_y: 0.5 } if gs == :win || gs == :lose
-  args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  [#{gs}]  R=restart  Shift+T=sandbox  Shift+J=joints  Shift+C=callbacks  Shift+Q=queries"
+  args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  [#{gs}]  R=restart  Shift+T=sandbox  Shift+J=joints  Shift+C=callbacks  Shift+Q=queries  Shift+P=sprites"
 end
 
 # Sandbox Mode
@@ -485,7 +495,9 @@ end
 def tick_sandbox args
   world = args.state.world
   args.state.spawn_idx = (args.state.spawn_idx + 1) % SPAWN_MODES.length if args.inputs.keyboard.key_down.tab
-  args.state.debug_draw = !args.state.debug_draw if args.inputs.keyboard.key_down.d
+  if args.inputs.keyboard.key_down.d && (args.inputs.keyboard.ctrl || args.inputs.keyboard.meta)
+    args.state.debug_draw = !args.state.debug_draw
+  end
   if args.inputs.keyboard.key_down.r
     args.state.mode = :sandbox; setup_sandbox args; return
   end
@@ -563,7 +575,7 @@ def tick_sandbox args
   end
   dc = world[:bodies].count { |body| body[:type] == :dynamic }; sc = world[:bodies].count { |body| body[:sleeping] }
   args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  Bodies: #{dc}  Sleep: #{sc}"
-  args.outputs.debug << "Click=#{mode}  Shift+Click=remove  Tab=shape  D=debug  R=reset  Shift+T=game  Shift+J=joints"
+  args.outputs.debug << "Click=#{mode}  Shift+Click=remove  Tab=shape  Ctrl+D=debug  R=reset  Shift+T=game  Shift+J=joints"
 end
 
 # Callback Demo Mode
@@ -573,11 +585,15 @@ module CallbackDemo
       @begin_fx = []
       @persist_lines = {}
       @end_fx = []
+      @hit_flashes = []
       @begin_count = 0
       @persist_count = 0
       @end_count = 0
+      @hit_count = 0
+      @pre_solve_disabled = 0
       @tracked_hits = 0
       @tracked_body = nil
+      @max_hit_speed = 0.0
     end
 
     def on_contact_begin body_a, body_b, pair
@@ -598,6 +614,40 @@ module CallbackDemo
       cx = (body_a[:x] + body_b[:x]) * 0.5
       cy = (body_a[:y] + body_b[:y]) * 0.5
       @end_fx << { x: cx, y: cy, timer: 25 }
+    end
+
+    # One-way platform pre-solve. Platforms set body[:one_way] = true; the
+    # contact is accepted only when the platform's contact normal points
+    # roughly upward and the dynamic body isn't ascending. body[:drop_through_frames]
+    # temporarily disables the contact so the player can fall through.
+    # Mirrors Box2D's One-Sided Platform sample.
+    def on_pre_solve body_a, body_b, pair
+      plat_is_a = body_a[:one_way]
+      return true unless plat_is_a || body_b[:one_way]
+      dyn = plat_is_a ? body_b : body_a
+
+      if (dyn[:drop_through_frames] || 0) > 0
+        @pre_solve_disabled += 1
+        return false
+      end
+
+      ny = pair[:manifold][:normal_y]
+      n_from_plat_y = plat_is_a ? ny : -ny
+      if n_from_plat_y > 0.95 && dyn[:vy] <= 0.0
+        true
+      else
+        @pre_solve_disabled += 1
+        false
+      end
+    end
+
+    # Hit event — fires when approach speed exceeds world[:hit_event_threshold].
+    # Spawn a bright flash at the hit point, scaled by impact speed.
+    def on_hit_event body_a, body_b, pair, wx, wy, speed
+      @hit_count += 1
+      @max_hit_speed = speed if speed > @max_hit_speed
+      size = 10.0 + [speed / 30.0, 80.0].min
+      @hit_flashes << { x: wx, y: wy, size: size, timer: 24 }
     end
 
     def tick_effects outputs
@@ -630,6 +680,19 @@ module CallbackDemo
           i += 1
         end
       end
+
+      i = 0
+      while i < @hit_flashes.length
+        e = @hit_flashes[i]; e[:timer] -= 1
+        if e[:timer] <= 0
+          @hit_flashes.delete_at i
+        else
+          s = e[:size] * (e[:timer] / 24.0 + 0.5)
+          a = e[:timer] * 255 / 24
+          outputs.sprites << { x: e[:x] - s * 0.5, y: e[:y] - s * 0.5, w: s, h: s, path: 'sprites/circle/yellow.png', a: a }
+          i += 1
+        end
+      end
     end
 
     # Per-body callback: registered on the tracked body only
@@ -640,19 +703,38 @@ module CallbackDemo
     def begin_count; @begin_count; end
     def persist_count; @persist_count; end
     def end_count; @end_count; end
+    def hit_count; @hit_count; end
+    def pre_solve_disabled; @pre_solve_disabled; end
+    def max_hit_speed; @max_hit_speed; end
     def tracked_hits; @tracked_hits; end
     def tracked_body; @tracked_body; end
   end
 end
 
+CALLBACK_SCENES = ['Events', 'Pre-solve (one-way platformer)', 'Hit events (impact flash)', 'CCD (bullet vs walls)']
+
 def setup_callback_demo args
+  args.state.callback_scene = args.state.callback_scene || 0
+  build_callback_scene args, args.state.callback_scene
+end
+
+def build_callback_scene args, idx
   world = Physics.create_world
   args.state.world = world
   args.state.spawn_idx = 0
   args.state.color_idx = 0
   args.state.debug_draw = false
-
   CallbackDemo.init
+
+  case idx
+  when 0 then build_callback_scene_events args, world
+  when 1 then build_callback_scene_pre_solve args, world
+  when 2 then build_callback_scene_hit_events args, world
+  when 3 then build_callback_scene_ccd args, world
+  end
+end
+
+def build_callback_scene_events args, world
   Physics.on_contact_begin world, CallbackDemo, :on_contact_begin
   Physics.on_contact_persist world, CallbackDemo, :on_contact_persist
   Physics.on_contact_end world, CallbackDemo, :on_contact_end
@@ -692,26 +774,241 @@ def setup_callback_demo args
   3.times { sb_capsule world, args, 200 + rand(880), 400 + rand(250) }
 end
 
+# Pre-solve scene: a side-scrolling platformer driven by a one-way-platform
+# pre-solve callback. Platforms tagged body[:one_way] only support from
+# above; holding Down opens a drop-through window on the player body.
+def build_callback_scene_pre_solve args, world
+  Physics.on_pre_solve world, CallbackDemo, :on_pre_solve
+
+  level_w = 3600
+
+  ground_segs = [[0, 900], [1100, 1900], [2100, level_w]]
+  ground_segs.each do |x0, x1|
+    cx = (x0 + x1) * 0.5; w = x1 - x0
+    body = Physics.create_body x: cx, y: 10, type: :static
+    Physics.add_body world, body
+    shp = Physics.create_box body: body, w: w, h: 80, friction: 0.9
+    shp[:color] = 'green'
+    Physics.add_shape world, shp
+  end
+
+  # Bounding walls at the level edges.
+  left = Physics.create_body x: -20, y: 400, type: :static
+  Physics.add_body world, left
+  Physics.add_shape world, Physics.create_box(body: left, w: 40, h: 1400)
+  right = Physics.create_body x: level_w + 20, y: 400, type: :static
+  Physics.add_body world, right
+  Physics.add_shape world, Physics.create_box(body: right, w: 40, h: 1400)
+
+  # Goal pedestal (solid, not one-way) at the far right.
+  pedestal = { x: 3350, y: 120, w: 160, h: 200 }
+  ped_body = Physics.create_body x: pedestal[:x], y: pedestal[:y], type: :static
+  Physics.add_body world, ped_body
+  ped_shape = Physics.create_box body: ped_body, w: pedestal[:w], h: pedestal[:h], friction: 0.9
+  ped_shape[:color] = 'indigo'
+  Physics.add_shape world, ped_shape
+
+  # One-way platforms: [x, y, width].
+  platforms = [
+    [ 300, 160, 140],
+    [ 520, 250, 140],
+    [ 720, 340, 140],
+    [1200, 200, 180],
+    [1400, 300, 160],
+    [1400, 420, 160],
+    [1700, 200, 200],
+    [2250, 180, 160],
+    [2500, 280, 180],
+    [2800, 200, 160],
+    [3100, 320, 200]
+  ]
+
+  platforms.each do |px, py, pw|
+    body = Physics.create_body x: px, y: py, type: :static
+    Physics.add_body world, body
+    shape = Physics.create_box body: body, w: pw, h: 14, friction: 0.8
+    shape[:color] = 'blue'
+    Physics.add_shape world, shape
+    body[:one_way] = true
+  end
+
+  # Player is a locked-rotation capsule. Friction is 0 because horizontal
+  # motion is driven by set_velocity each frame; contact friction would
+  # just bleed input-driven momentum on landing.
+  spawn_x = 140.0; spawn_y = 220.0
+  player = Physics.create_body x: spawn_x, y: spawn_y, type: :dynamic,
+                               lock_rotation: true, linear_damping: 0.0
+  Physics.add_body world, player
+  pshape = Physics.create_capsule body: player, x1: 0, y1: -12, x2: 0, y2: 12, radius: 14,
+                                  density: 2.0, friction: 0.0, restitution: 0.0
+  pshape[:color] = 'red'
+  Physics.add_shape world, pshape
+  player[:drop_through_frames] = 0
+
+  crate_spots = [[600, 80], [1300, 80], [1500, 350], [2400, 80], [2700, 80], [2900, 240]]
+  crate_spots.each do |cx, cy|
+    body = Physics.create_body x: cx, y: cy, type: :dynamic,
+                               linear_damping: 0.2, angular_damping: 0.4
+    Physics.add_body world, body
+    s = Physics.create_box body: body, w: 34, h: 34, density: 1.0, friction: 0.8
+    s[:color] = 'orange'
+    Physics.add_shape world, s
+  end
+
+  # Coins (not physics bodies — just points in world space).
+  coins = []
+  platforms.each { |px, py, _| coins << { x: px, y: py + 36, collected: false } }
+  coins << { x: pedestal[:x], y: pedestal[:y] + pedestal[:h] * 0.5 + 30, collected: false }
+  coins << { x: 400, y: 90, collected: false }
+  coins << { x: 1500, y: 90, collected: false }
+  coins << { x: 2600, y: 90, collected: false }
+
+  args.state.plat = {
+    player: player, spawn_x: spawn_x, spawn_y: spawn_y,
+    level_w: level_w, cam_x: 0.0, cam_y: 0.0,
+    deaths: 0, coins: coins, collected: 0, total_coins: coins.length, won: false,
+    platforms: platforms, ground_segs: ground_segs, pedestal: pedestal
+  }
+end
+
+# Hit-events flash: drop shapes; fast impacts trigger yellow flashes at the
+# contact point, scaled by impact speed. Keys [ and ] adjust the threshold.
+def build_callback_scene_hit_events args, world
+  world[:hit_event_threshold] = 400.0
+  Physics.on_contact_hit world, CallbackDemo, :on_hit_event
+
+  floor = Physics.create_body x: 640, y: -10, type: :static
+  Physics.add_body world, floor
+  Physics.add_shape world, Physics.create_box(body: floor, w: 1200, h: 40, friction: 0.8)
+  left_wall = Physics.create_body x: -10, y: 360, type: :static
+  Physics.add_body world, left_wall
+  Physics.add_shape world, Physics.create_box(body: left_wall, w: 40, h: 800)
+  right_wall = Physics.create_body x: 1290, y: 360, type: :static
+  Physics.add_body world, right_wall
+  Physics.add_shape world, Physics.create_box(body: right_wall, w: 40, h: 800)
+
+  # A central anvil to slam into.
+  anvil = Physics.create_body x: 640, y: 40, type: :static
+  Physics.add_body world, anvil
+  anvil_shape = Physics.create_box body: anvil, w: 220, h: 40, friction: 0.8
+  anvil_shape[:color] = 'indigo'
+  Physics.add_shape world, anvil_shape
+end
+
+# CCD bullet vs thin walls: click anywhere to fire a fast projectile
+# rightward. A column of thin static walls stands in its path; the
+# engine's automatic CCD clamps the projectile to the first wall it
+# would tunnel through.
+def build_callback_scene_ccd args, world
+  floor = Physics.create_body x: 640, y: -10, type: :static
+  Physics.add_body world, floor
+  Physics.add_shape world, Physics.create_box(body: floor, w: 1200, h: 40, friction: 0.8)
+  left_wall = Physics.create_body x: -10, y: 360, type: :static
+  Physics.add_body world, left_wall
+  Physics.add_shape world, Physics.create_box(body: left_wall, w: 40, h: 800)
+  right_wall = Physics.create_body x: 1290, y: 360, type: :static
+  Physics.add_body world, right_wall
+  Physics.add_shape world, Physics.create_box(body: right_wall, w: 40, h: 800)
+
+  # A row of thin vertical walls the projectile would tunnel through
+  # without CCD. 4 px wide, 40 px apart.
+  wall_colors = %w[red orange yellow green blue indigo violet]
+  wall_xs = [500, 560, 620, 680, 740, 800, 860]
+  wall_xs.each_with_index do |wx, i|
+    b = Physics.create_body x: wx, y: 360, type: :static
+    Physics.add_body world, b
+    s = Physics.create_box body: b, w: 4, h: 200, friction: 0.6
+    s[:color] = wall_colors[i % wall_colors.length]
+    Physics.add_shape world, s
+  end
+  args.state.ccd_projectiles = []
+end
+
+# Spawn a fast projectile at (x, y) aimed rightward. Stored so the demo
+# can count them in the HUD.
+def spawn_ccd_projectile world, args, x, y
+  body = Physics.create_body x: x, y: y, type: :dynamic, gravity_scale: 0.0
+  Physics.add_body world, body
+  shape = Physics.create_circle body: body, radius: 5, density: 1.0, friction: 0.3, restitution: 0.0
+  shape[:color] = 'white'
+  Physics.add_shape world, shape
+  Physics.set_velocity world, body, 6000.0, 0.0
+  args.state.ccd_projectiles << body
+end
+
 def tick_callback_demo args
   world = args.state.world
 
   if args.inputs.keyboard.key_down.r
-    args.state.mode = :callbacks; setup_callback_demo args; return
+    build_callback_scene args, args.state.callback_scene; return
   end
-  args.state.debug_draw = !args.state.debug_draw if args.inputs.keyboard.key_down.d
+  if args.inputs.keyboard.key_down.d && (args.inputs.keyboard.ctrl || args.inputs.keyboard.meta)
+    args.state.debug_draw = !args.state.debug_draw
+  end
   args.state.spawn_idx = (args.state.spawn_idx + 1) % SPAWN_MODES.length if args.inputs.keyboard.key_down.tab
+
+  # Number keys 1–4 switch sub-scenes.
+  new_scene = nil
+  new_scene = 0 if args.inputs.keyboard.key_down.one
+  new_scene = 1 if args.inputs.keyboard.key_down.two
+  new_scene = 2 if args.inputs.keyboard.key_down.three
+  new_scene = 3 if args.inputs.keyboard.key_down.four
+  if new_scene && new_scene != args.state.callback_scene
+    args.state.callback_scene = new_scene
+    build_callback_scene args, new_scene; return
+  end
+
+  scene = args.state.callback_scene
+
+  # Scene 1 is a full platformer — self-contained input, physics step,
+  # camera, and rendering. Early-return past the shared spawn/render path.
+  if scene == 1
+    tick_platformer_scene args
+    return
+  end
+
   mode = SPAWN_MODES[args.state.spawn_idx]
+
+  # Scene 2: [ and ] adjust the hit-event threshold live.
+  if scene == 2
+    if args.inputs.keyboard.key_down.open_square_brace
+      world[:hit_event_threshold] = [world[:hit_event_threshold] - 50.0, 50.0].max
+    end
+    if args.inputs.keyboard.key_down.close_square_brace
+      world[:hit_event_threshold] = [world[:hit_event_threshold] + 50.0, 2000.0].min
+    end
+  end
+
   if args.inputs.mouse.click
     mx = args.inputs.mouse.x; my = args.inputs.mouse.y
-    case mode
-    when :box then sb_box world, args, mx, my
-    when :circle then sb_circle world, args, mx, my
-    when :capsule then sb_capsule world, args, mx, my
-    when :polygon then sb_polygon world, args, mx, my
+    if scene == 3
+      # CCD scene: fire a fast projectile from the left toward the wall column
+      spawn_ccd_projectile world, args, 80.0, my
+    else
+      case mode
+      when :box then sb_box world, args, mx, my
+      when :circle then sb_circle world, args, mx, my
+      when :capsule then sb_capsule world, args, mx, my
+      when :polygon then sb_polygon world, args, mx, my
+      end
     end
   end
 
   Physics.tick world
+
+  # Scene 3: cull projectiles once they've sailed off-screen or truly stopped
+  # (so the HUD doesn't report infinite bodies).
+  if scene == 3 && args.state.ccd_projectiles
+    ps = args.state.ccd_projectiles; pi = ps.length - 1
+    while pi >= 0
+      b = ps[pi]
+      if b[:x] > 1300 || b[:x] < -20 || b[:y] < -20
+        Physics.remove_body world, b
+        ps.delete_at pi
+      end
+      pi -= 1
+    end
+  end
 
   args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 25, g: 25, b: 35 }
   args.outputs.solids << { x: 0, y: 0, w: 1280, h: 20, r: 50, g: 55, b: 65 }
@@ -771,23 +1068,68 @@ def tick_callback_demo args
 
   CallbackDemo.tick_effects args.outputs
 
-  # Highlight the tracked body with a white ring
-  tracked_body = CallbackDemo.tracked_body
-  if tracked_body
-    args.outputs.sprites << { x: tracked_body[:x] - 24, y: tracked_body[:y] - 24, w: 48, h: 48, path: 'sprites/circle/white.png', a: 120 }
+  # Scene-specific static-body overlays (the generic renderer draws static
+  # polygons as grey outlines, which reads poorly for thin walls and
+  # coloured surfaces).
+  if scene == 3
+    # Colour the CCD walls so they're easy to see.
+    wall_rgb = { 'red' => [220, 60, 60], 'orange' => [230, 140, 40], 'yellow' => [230, 220, 60],
+                 'green' => [70, 200, 90], 'blue' => [70, 130, 230], 'indigo' => [120, 80, 220],
+                 'violet' => [200, 90, 220] }
+    shapes = world[:shapes]; si = 0
+    while si < shapes.length
+      s = shapes[si]; si += 1
+      next unless s[:type] == :polygon && s[:body][:type] == :static && s[:color]
+      rgb = wall_rgb[s[:color]] || [200, 200, 200]
+      wv = s[:world_vertices]; c = s[:count]
+      if c == 4
+        x0 = wv[0]; x1 = wv[0]; y0 = wv[1]; y1 = wv[1]; vi = 1
+        while vi < c
+          vi2 = vi * 2; vx = wv[vi2]; vy = wv[vi2 + 1]
+          x0 = vx if vx < x0; x1 = vx if vx > x1
+          y0 = vy if vy < y0; y1 = vy if vy > y1
+          vi += 1
+        end
+        args.outputs.solids << { x: x0, y: y0, w: x1 - x0, h: y1 - y0, r: rgb[0], g: rgb[1], b: rgb[2] }
+      end
+    end
+  end
+
+  # Highlight the tracked body with a white ring (scene 0 only)
+  if scene == 0
+    tracked_body = CallbackDemo.tracked_body
+    if tracked_body
+      args.outputs.sprites << { x: tracked_body[:x] - 24, y: tracked_body[:y] - 24, w: 48, h: 48, path: 'sprites/circle/white.png', a: 120 }
+    end
   end
 
   if args.state.debug_draw
     Physics::DebugDraw.draw_contacts world, args.outputs; Physics::DebugDraw.draw_aabbs world, args.outputs; Physics::DebugDraw.draw_sleep_state world, args.outputs
   end
 
-  args.outputs.labels << { x: 10, y: 710, text: "Callback Demo", size_px: 24, r: 255, g: 255, b: 255 }
-  args.outputs.labels << { x: 10, y: 685, text: "Global — Begin: #{CallbackDemo.begin_count}  Persist: #{CallbackDemo.persist_count}  End: #{CallbackDemo.end_count}", size_px: 18, r: 200, g: 200, b: 200 }
-  args.outputs.labels << { x: 10, y: 662, text: "Per-body — Tracked body hits: #{CallbackDemo.tracked_hits} (white circle)", size_px: 18, r: 180, g: 220, b: 255 }
-  args.outputs.labels << { x: 10, y: 639, text: "Yellow flash = begin   Green line = persist   Star = end", size_px: 14, r: 150, g: 150, b: 180 }
+  scene_name = CALLBACK_SCENES[scene] || '?'
+  # Right-aligned so the left-side FPS/Bodies debug overlay doesn't cover it.
+  args.outputs.labels << { x: 1270, y: 710, text: "Callbacks Demo [#{scene + 1}/#{CALLBACK_SCENES.length}]: #{scene_name}", size_px: 24, r: 255, g: 255, b: 255, alignment_enum: 2 }
+
+  case scene
+  when 0
+    args.outputs.labels << { x: 1270, y: 685, text: "Global — Begin: #{CallbackDemo.begin_count}  Persist: #{CallbackDemo.persist_count}  End: #{CallbackDemo.end_count}", size_px: 18, r: 200, g: 200, b: 200, alignment_enum: 2 }
+    args.outputs.labels << { x: 1270, y: 662, text: "Per-body — Tracked body hits: #{CallbackDemo.tracked_hits} (white circle)", size_px: 18, r: 180, g: 220, b: 255, alignment_enum: 2 }
+    args.outputs.labels << { x: 1270, y: 639, text: "Yellow flash = begin   Green line = persist   Star = end", size_px: 14, r: 150, g: 150, b: 180, alignment_enum: 2 }
+  when 2
+    args.outputs.labels << { x: 1270, y: 685, text: "Hit events: #{CallbackDemo.hit_count}   Max impact speed: #{CallbackDemo.max_hit_speed.round(0)} px/s", size_px: 18, r: 200, g: 200, b: 200, alignment_enum: 2 }
+    args.outputs.labels << { x: 1270, y: 662, text: "Threshold: #{world[:hit_event_threshold].round(0)} px/s    [ and ]  adjust", size_px: 18, r: 180, g: 220, b: 255, alignment_enum: 2 }
+    args.outputs.labels << { x: 1270, y: 639, text: "Drop shapes on the anvil from varied heights — fast impacts flash yellow", size_px: 14, r: 150, g: 150, b: 180, alignment_enum: 2 }
+  when 3
+    pc = args.state.ccd_projectiles ? args.state.ccd_projectiles.length : 0
+    args.outputs.labels << { x: 1270, y: 685, text: "Live projectiles: #{pc}    CCD: ENABLED (automatic against static geometry)", size_px: 18, r: 200, g: 200, b: 200, alignment_enum: 2 }
+    args.outputs.labels << { x: 1270, y: 662, text: "Click anywhere to fire a 6000 px/s bullet at the wall column", size_px: 14, r: 180, g: 220, b: 255, alignment_enum: 2 }
+    args.outputs.labels << { x: 1270, y: 639, text: "Without CCD the 5px bullet would tunnel through the 4px walls in one sub-step", size_px: 14, r: 150, g: 150, b: 180, alignment_enum: 2 }
+  end
+
   dc = world[:bodies].count { |body| body[:type] == :dynamic }; sc = world[:bodies].count { |body| body[:sleeping] }
   args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  Bodies: #{dc}  Sleep: #{sc}"
-  args.outputs.debug << "Click=#{mode}  Tab=shape  D=debug  R=reset  Shift+C=game"
+  args.outputs.debug << "1-4=scene  Click=#{scene == 3 ? 'fire' : mode}  Tab=shape  Ctrl+D=debug  R=reset  Shift+C=game"
 end
 
 # Joints Mode
@@ -1580,6 +1922,85 @@ def tick_query_demo args
   outs.debug << "FPS: #{args.gtk.current_framerate.to_i}  1-5=switch mode  R=reset  Shift+Q=game"
 end
 
+SPRITE_COLORS = %w[red orange yellow green blue indigo violet]
+
+def setup_sprite_demo args
+  world = Physics.create_world
+  args.state.world = world
+  args.state.sprites = []
+  args.state.sprite_color_idx = 0
+
+  floor = Physics.create_body x: 640, y: -10, type: :static
+  Physics.add_body world, floor
+  Physics.add_shape world, Physics.create_box(body: floor, w: 1280, h: 40, friction: 0.8)
+  left_wall = Physics.create_body x: -10, y: 360, type: :static
+  Physics.add_body world, left_wall
+  Physics.add_shape world, Physics.create_box(body: left_wall, w: 40, h: 800, friction: 0.5)
+  right_wall = Physics.create_body x: 1290, y: 360, type: :static
+  Physics.add_body world, right_wall
+  Physics.add_shape world, Physics.create_box(body: right_wall, w: 40, h: 800, friction: 0.5)
+
+  colors = SPRITE_COLORS
+  8.times do |i|
+    s = { x: 200 + i * 120, y: 400 + rand(200),
+          w: 30 + rand(40), h: 30 + rand(40),
+          path: "sprites/square/#{colors[i % colors.length]}.png",
+          angle: rand(60) - 30 }
+    Physics.simulate_sprite world, s
+    args.state.sprites << s
+  end
+end
+
+def tick_sprite_demo args
+  world = args.state.world
+  sprites = args.state.sprites
+  if args.inputs.keyboard.key_down.r
+    args.state.mode = :sprites; setup_sprite_demo args; return
+  end
+
+  if args.inputs.mouse.click
+    mx = args.inputs.mouse.x; my = args.inputs.mouse.y
+    if args.inputs.keyboard.shift
+      body = Physics.body_at_point world, mx, my
+      if body && body[:type] == :dynamic
+        ss = world[:simulated_sprites]
+        if ss
+          entry = ss.find { |e| e[1].equal?(body) }
+          if entry
+            Physics.remove_simulated_sprite world, entry[0]
+            sprites.delete(entry[0])
+          end
+        end
+      end
+    else
+      color = SPRITE_COLORS[args.state.sprite_color_idx % SPRITE_COLORS.length]
+      args.state.sprite_color_idx += 1
+      s = { x: mx, y: my,
+            w: 30 + rand(40), h: 30 + rand(40),
+            path: "sprites/square/#{color}.png",
+            angle: rand(60) - 30 }
+      Physics.simulate_sprite world, s
+      sprites << s
+    end
+  end
+
+  Physics.tick world
+
+  # Render — sprites are already updated by tick
+  i = 0
+  while i < sprites.length
+    args.outputs.sprites << sprites[i]
+    i += 1
+  end
+
+  # Draw static walls as lines
+  args.outputs.solids << { x: 0, y: 0, w: 1280, h: 10, r: 100, g: 180, b: 80 }
+
+  dc = world[:bodies].count { |b| b[:type] == :dynamic }
+  args.outputs.debug << "FPS: #{args.gtk.current_framerate.to_i}  Sprites: #{dc}"
+  args.outputs.debug << "Click=spawn  Shift+Click=remove  R=reset  Shift+P=game"
+end
+
 def draw_query_shape outs, shape, body, color, alpha = 255
   ad = body[:angle] * DEG
   case shape[:type]
@@ -1592,7 +2013,6 @@ def draw_query_shape outs, shape, body, color, alpha = 255
     wv = shape[:world_vertices]; c = shape[:count]
     return unless wv
     # fill via fan triangles
-    vi = 0
     lv = shape[:vertices]
     lx0 = 1e18; lx1 = -1e18; ly0 = 1e18; ly1 = -1e18; vi2 = 0
     while vi2 < c
@@ -1642,4 +2062,245 @@ def draw_query_shape outs, shape, body, color, alpha = 255
     outs.lines << { x: shape[:wx1], y: shape[:wy1], x2: shape[:wx2], y2: shape[:wy2],
                     r: 255, g: 255, b: 100, a: alpha }
   end
+end
+
+# Platformer (pre-solve scene): input, physics step, camera, rendering
+def tick_platformer_scene args
+  world = args.state.world
+  st = args.state.plat
+  return unless st && st[:player]
+
+  player = st[:player]
+  kb = args.inputs.keyboard
+
+  jump_pressed = kb.key_down.space || kb.key_down.up || kb.key_down.up_arrow || kb.key_down.w
+  drop_pressed = kb.key_down.down || kb.key_down.down_arrow || kb.key_down.s
+  h_input = args.inputs.left_right_perc.to_f
+
+  dt_frames = player[:drop_through_frames] || 0
+  player[:drop_through_frames] = dt_frames > 0 ? dt_frames - 1 : 0
+
+  grounded = platformer_grounded? world, player
+
+  # Ground lerp decelerates on release; air lerp only on input, so jumps preserve momentum
+  move_speed = 280.0
+  target_vx = h_input * move_speed
+  new_vx = player[:vx]
+  if grounded
+    new_vx += (target_vx - new_vx) * 0.35
+  elsif h_input != 0.0
+    new_vx += (target_vx - new_vx) * 0.12
+  end
+  new_vy = player[:vy]
+
+  if jump_pressed && grounded && !st[:won]
+    new_vy = 580.0
+  end
+
+  # Opens a pre-solve drop-through window; small downward nudge guarantees
+  # we leave the platform before it expires
+  if drop_pressed && grounded && !st[:won]
+    player[:drop_through_frames] = 10
+    new_vy = -40.0 if new_vy > -40.0
+  end
+
+  Physics.set_velocity world, player, new_vx, new_vy
+
+  Physics.tick world
+
+  if player[:y] < -120
+    player[:x] = st[:spawn_x]; player[:y] = st[:spawn_y]
+    player[:vx] = 0.0; player[:vy] = 0.0
+    player[:drop_through_frames] = 0
+    st[:deaths] += 1
+  end
+
+  pickup_r2 = 26 * 26
+  st[:coins].each do |c|
+    next if c[:collected]
+    dx = c[:x] - player[:x]; dy = c[:y] - player[:y]
+    if dx * dx + dy * dy < pickup_r2
+      c[:collected] = true
+      st[:collected] += 1
+    end
+  end
+
+  ped = st[:pedestal]
+  on_ped = player[:x] > ped[:x] - ped[:w] * 0.5 &&
+           player[:x] < ped[:x] + ped[:w] * 0.5 &&
+           player[:y] > ped[:y] + ped[:h] * 0.5 - 4
+  st[:won] = true if on_ped && st[:collected] >= st[:total_coins]
+
+  target_cx = player[:x] - 640
+  target_cx = 0.0 if target_cx < 0.0
+  max_cam = st[:level_w] - 1280
+  target_cx = max_cam if target_cx > max_cam
+  st[:cam_x] = st[:cam_x] + (target_cx - st[:cam_x]) * 0.12
+
+  render_platformer_scene args, st
+end
+
+# Grounded = any active contact with a roughly-upward normal. Pre-solve-
+# disabled pairs are already removed from pair_list, so pass-through
+# contacts are excluded
+def platformer_grounded? world, player
+  return false if player[:vy] > 120.0
+  pl = world[:pair_list]
+  i = 0
+  while i < pl.length
+    p = pl[i]; i += 1
+    ba = p[:body_a]; bb = p[:body_b]
+    pa = (ba == player)
+    pb = (bb == player)
+    next unless pa || pb
+    ny = p[:manifold][:normal_y]
+    pny = pa ? -ny : ny
+    return true if pny > 0.7
+  end
+  false
+end
+
+def render_platformer_scene args, st
+  cam_x = st[:cam_x]
+  world = args.state.world
+  outs = args.outputs
+
+  # Sky background + parallax silhouettes
+  outs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 50, g: 80, b: 130 }
+  par_x = -(cam_x * 0.25).to_i
+  i = 0
+  while i < 10
+    mx = par_x + i * 360 - 200
+    outs.solids << { x: mx, y: 40, w: 300, h: 220, r: 40, g: 60, b: 100 }
+    i += 1
+  end
+  par_x2 = -(cam_x * 0.5).to_i
+  i = 0
+  while i < 14
+    mx = par_x2 + i * 260 - 100
+    outs.solids << { x: mx, y: 30, w: 220, h: 140, r: 55, g: 80, b: 120 }
+    i += 1
+  end
+
+  # Ground
+  st[:ground_segs].each do |x0, x1|
+    sx = x0 - cam_x
+    w = x1 - x0
+    outs.solids << { x: sx, y: 0, w: w, h: 50, r: 70, g: 140, b: 80 }
+    outs.solids << { x: sx, y: 45, w: w, h: 5, r: 110, g: 210, b: 120 }
+  end
+
+  # Goal pedestal
+  ped = st[:pedestal]
+  outs.solids << { x: ped[:x] - ped[:w] * 0.5 - cam_x, y: ped[:y] - ped[:h] * 0.5,
+                   w: ped[:w], h: ped[:h], r: 110, g: 90, b: 190 }
+  outs.solids << { x: ped[:x] - ped[:w] * 0.5 - cam_x, y: ped[:y] + ped[:h] * 0.5 - 6,
+                   w: ped[:w], h: 6, r: 200, g: 170, b: 255 }
+
+  # One-way platforms: blue body with a white top lip to show the support side
+  st[:platforms].each do |px, py, pw|
+    outs.solids << { x: px - pw * 0.5 - cam_x, y: py - 7, w: pw, h: 14,
+                     r: 70, g: 130, b: 220 }
+    outs.lines << { x: px - pw * 0.5 - cam_x, y: py + 7,
+                    x2: px + pw * 0.5 - cam_x, y2: py + 7,
+                    r: 230, g: 240, b: 255 }
+  end
+
+  # Dynamic bodies (player + crates), with camera offset
+  shapes = world[:shapes]; si = 0
+  while si < shapes.length
+    shape = shapes[si]; si += 1
+    body = shape[:body]
+    next unless body[:type] == :dynamic
+    ang_deg = body[:angle] * DEG
+    color = shape[:color] || 'white'
+    if shape[:type] == :polygon && shape[:count] == 4
+      v = shape[:vertices]
+      x0 = 1e18; x1 = -1e18; y0 = 1e18; y1 = -1e18
+      vi = 0
+      while vi < 4
+        vi2 = vi * 2
+        lx = v[vi2]; ly = v[vi2 + 1]
+        x0 = lx if lx < x0; x1 = lx if lx > x1
+        y0 = ly if ly < y0; y1 = ly if ly > y1
+        vi += 1
+      end
+      w = x1 - x0; h = y1 - y0
+      outs.sprites << { x: body[:x] - w * 0.5 - cam_x, y: body[:y] - h * 0.5, w: w, h: h,
+                        path: "sprites/square/#{color}.png", angle: ang_deg }
+    elsif shape[:type] == :capsule
+      ca = Math.cos body[:angle]; sa_v = Math.sin body[:angle]
+      bx = body[:x] - cam_x; by = body[:y]
+      r = shape[:radius]; d = r * 2
+      w1x = bx + ca * shape[:x1] - sa_v * shape[:y1]
+      w1y = by + sa_v * shape[:x1] + ca * shape[:y1]
+      w2x = bx + ca * shape[:x2] - sa_v * shape[:y2]
+      w2y = by + sa_v * shape[:x2] + ca * shape[:y2]
+      outs.sprites << { x: w1x - r, y: w1y - r, w: d, h: d, path: "sprites/circle/#{color}.png" }
+      outs.sprites << { x: w2x - r, y: w2y - r, w: d, h: d, path: "sprites/circle/#{color}.png" }
+      sl = Math.sqrt((w2x - w1x) ** 2 + (w2y - w1y) ** 2)
+      outs.sprites << { x: (w1x + w2x) * 0.5 - sl * 0.5, y: (w1y + w2y) * 0.5 - r,
+                        w: sl, h: d, path: "sprites/square/#{color}.png", angle: ang_deg }
+    elsif shape[:type] == :circle
+      r = shape[:radius]; d = r * 2
+      outs.sprites << { x: body[:x] - r - cam_x, y: body[:y] - r, w: d, h: d,
+                        path: "sprites/circle/#{color}.png", angle: ang_deg }
+    end
+  end
+
+  # Coins with a small bob
+  tc = (args.tick_count || 0)
+  st[:coins].each do |c|
+    next if c[:collected]
+    bob = Math.sin((tc + c[:x] * 0.5) * 0.1) * 4
+    outs.sprites << { x: c[:x] - 10 - cam_x, y: c[:y] - 10 + bob, w: 20, h: 20,
+                      path: 'sprites/circle/yellow.png' }
+  end
+
+  # Drop-through ghost ring
+  if (st[:player][:drop_through_frames] || 0) > 0
+    p = st[:player]
+    outs.sprites << { x: p[:x] - 24 - cam_x, y: p[:y] - 24, w: 48, h: 48,
+                      path: 'sprites/circle/white.png', a: 100 }
+  end
+
+  # Goal-ready indicator
+  if st[:collected] >= st[:total_coins] && !st[:won]
+    ring = 36 + (Math.sin(tc * 0.12) * 4)
+    outs.sprites << { x: ped[:x] - ring * 0.5 - cam_x,
+                      y: ped[:y] + ped[:h] * 0.5 + 2,
+                      w: ring, h: ring,
+                      path: 'sprites/circle/green.png', a: 220 }
+  end
+
+  # HUD (screen space) — right-aligned so the left-side debug overlay
+  # (FPS / Bodies / Scene) doesn't cover it.
+  outs.labels << { x: 1270, y: 710, text: "Callbacks Demo [2/4]: Pre-solve (one-way platformer)",
+                   size_px: 24, r: 255, g: 255, b: 255, alignment_enum: 2 }
+  outs.labels << { x: 1270, y: 685,
+                   text: "Coins: #{st[:collected]}/#{st[:total_coins]}   Deaths: #{st[:deaths]}   Disabled pairs (cumulative): #{CallbackDemo.pre_solve_disabled}",
+                   size_px: 18, r: 200, g: 220, b: 255, alignment_enum: 2 }
+  outs.labels << { x: 1270, y: 662,
+                   text: "Arrows/WASD move   Space/Up jump   Down/S drop through   Ctrl+D debug   R reset",
+                   size_px: 14, r: 180, g: 200, b: 220, alignment_enum: 2 }
+  outs.labels << { x: 1270, y: 642,
+                   text: "Blue = one-way platforms. Collect every coin, then stand on the purple pedestal.",
+                   size_px: 14, r: 150, g: 160, b: 190, alignment_enum: 2 }
+
+  if st[:won]
+    outs.labels << { x: 640, y: 430, text: "You win!", size_px: 54,
+                     r: 255, g: 240, b: 80, alignment_enum: 1 }
+    outs.labels << { x: 640, y: 388, text: "Press R to replay", size_px: 22,
+                     r: 255, g: 255, b: 255, alignment_enum: 1 }
+  end
+
+  if args.state.debug_draw
+    Physics::DebugDraw.draw_contacts world, outs
+    Physics::DebugDraw.draw_aabbs world, outs
+    Physics::DebugDraw.draw_sleep_state world, outs
+  end
+
+  dc = world[:bodies].count { |b| b[:type] == :dynamic }
+  outs.debug << "FPS: #{args.gtk.current_framerate.to_i}  Dyn: #{dc}  Cam: #{cam_x.to_i}/#{st[:level_w] - 1280}"
+  outs.debug << "1-4=scene  R=reset  Ctrl+D=debug  Shift+C=game"
 end

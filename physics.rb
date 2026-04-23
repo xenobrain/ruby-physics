@@ -35,6 +35,13 @@ module Physics
   CAP_NORMS_B  ||= [0.0, 0.0, 0.0, 0.0]
   SAT_A        ||= [0.0, 0]
   SAT_B        ||= [0.0, 0]
+  # Scratch pair handed to the pre-solve callback on a CCD hit.
+  CCD_PS_PAIR  ||= { body_a: nil, body_b: nil, shape_a: nil, shape_b: nil,
+                     manifold: { normal_x: 0.0, normal_y: 0.0, points: [] } }
+  # Scratch "core" proxy for the fraction==0 fallback in solve_continuous
+  # (a small circle at the fast shape's centroid; mirrors Box2D v3).
+  CCD_CORE_PROXY ||= { points_x: [0.0], points_y: [0.0], count: 1, radius: 0.0 }
+  CCD_CORE_FRACTION = 0.25
   LINEAR_SLOP        = 0.5
   SPECULATIVE_DISTANCE = 2.0
   PI                 = Math::PI
@@ -81,7 +88,12 @@ module Physics
         islands: [],
         on_contact_begin: nil,
         on_contact_persist: nil,
-        on_contact_end: nil
+        on_contact_end: nil,
+        on_pre_solve: nil,
+        on_contact_hit: nil,
+        hit_event_threshold: 100.0,
+        on_sensor_begin: nil,
+        on_sensor_end: nil
       }
     end
 
@@ -97,6 +109,22 @@ module Physics
       world[:on_contact_end] = [receiver, method]
     end
 
+    def on_pre_solve world, receiver, method
+      world[:on_pre_solve] = [receiver, method]
+    end
+
+    def on_contact_hit world, receiver, method
+      world[:on_contact_hit] = [receiver, method]
+    end
+
+    def on_sensor_begin world, receiver, method
+      world[:on_sensor_begin] = [receiver, method]
+    end
+
+    def on_sensor_end world, receiver, method
+      world[:on_sensor_end] = [receiver, method]
+    end
+
     def on_body_contact_begin body, receiver, method
       body[:on_contact_begin] = [receiver, method]
     end
@@ -109,13 +137,25 @@ module Physics
       body[:on_contact_end] = [receiver, method]
     end
 
+    def on_body_contact_hit body, receiver, method
+      body[:on_contact_hit] = [receiver, method]
+    end
+
+    def on_body_sensor_begin body, receiver, method
+      body[:on_sensor_begin] = [receiver, method]
+    end
+
+    def on_body_sensor_end body, receiver, method
+      body[:on_sensor_end] = [receiver, method]
+    end
+
     def pair_key a, b
       ai = a.object_id; bi = b.object_id
       lo = ai < bi ? ai : bi; hi = ai < bi ? bi : ai
       lo ^ (hi + 0x9e3779b9 + (lo << 6) + (lo >> 2))
     end
 
-    def create_body x: 0.0, y: 0.0, angle: 0.0, type: :dynamic, gravity_scale: 1.0, linear_damping: 0.0, angular_damping: 0.0
+    def create_body x: 0.0, y: 0.0, angle: 0.0, type: :dynamic, gravity_scale: 1.0, linear_damping: 0.0, angular_damping: 0.0, lock_linear_x: false, lock_linear_y: false, lock_rotation: false
       body = {
         x: x.to_f, y: y.to_f, angle: angle.to_f,
         vx: 0.0, vy: 0.0, w: 0.0,
@@ -127,6 +167,9 @@ module Physics
         gravity_scale: type == :dynamic ? gravity_scale.to_f : 0.0,
         linear_damping: linear_damping.to_f,
         angular_damping: angular_damping.to_f,
+        lock_linear_x: lock_linear_x,
+        lock_linear_y: lock_linear_y,
+        lock_rotation: lock_rotation,
         sleeping: false,
         sleep_time: 0.0,
         island: nil,
@@ -138,12 +181,13 @@ module Physics
     end
 
     def add_body world, body
+      body[:index] = world[:bodies].length
       world[:bodies] << body
       Islands.create_island world, body if body[:type] == :dynamic
       body
     end
 
-    def create_circle body:, radius:, offset_x: 0.0, offset_y: 0.0, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_circle body:, radius:, offset_x: 0.0, offset_y: 0.0, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF, is_sensor: false
       r = radius.to_f
       shape = {
         type: :circle,
@@ -157,6 +201,7 @@ module Physics
         tangent_speed: tangent_speed.to_f,
         density: density.to_f,
         layer: layer, mask: mask,
+        is_sensor: is_sensor,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
         proxy_id: nil, dyn_proxy_id: nil,
         fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
@@ -173,7 +218,7 @@ module Physics
       shape
     end
 
-    def create_polygon body:, vertices:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_polygon body:, vertices:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF, is_sensor: false
       n = vertices.length / 2
       return nil if n < 3
 
@@ -294,6 +339,7 @@ module Physics
         tangent_speed: tangent_speed.to_f,
         density: density.to_f,
         layer: layer, mask: mask,
+        is_sensor: is_sensor,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
         proxy_id: nil, dyn_proxy_id: nil,
         fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil
@@ -306,14 +352,14 @@ module Physics
       shape
     end
 
-    def create_box body:, w:, h:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_box body:, w:, h:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF, is_sensor: false
       hw = w.to_f * 0.5
       hh = h.to_f * 0.5
       verts = [-hw, -hh, hw, -hh, hw, hh, -hw, hh]
-      create_polygon body: body, vertices: verts, density: density, friction: friction, restitution: restitution, rolling_resistance: rolling_resistance, tangent_speed: tangent_speed, layer: layer, mask: mask
+      create_polygon body: body, vertices: verts, density: density, friction: friction, restitution: restitution, rolling_resistance: rolling_resistance, tangent_speed: tangent_speed, layer: layer, mask: mask, is_sensor: is_sensor
     end
 
-    def create_capsule body:, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0, radius:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_capsule body:, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0, radius:, density: 1.0, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF, is_sensor: false
       r = radius.to_f
       ax = x1.to_f; ay = y1.to_f
       bx = x2.to_f; by = y2.to_f
@@ -325,6 +371,7 @@ module Physics
         rolling_resistance: rolling_resistance.to_f, tangent_speed: tangent_speed.to_f,
         density: density.to_f,
         layer: layer, mask: mask,
+        is_sensor: is_sensor,
         wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
         proxy_id: nil, dyn_proxy_id: nil,
@@ -345,7 +392,7 @@ module Physics
       shape
     end
 
-    def create_segment body:, x1:, y1:, x2:, y2:, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+    def create_segment body:, x1:, y1:, x2:, y2:, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF, is_sensor: false
       shape = {
         type: :segment, body: body,
         x1: x1.to_f, y1: y1.to_f, x2: x2.to_f, y2: y2.to_f, radius: 0.0,
@@ -353,6 +400,7 @@ module Physics
         rolling_resistance: rolling_resistance.to_f, tangent_speed: tangent_speed.to_f,
         density: 0.0,
         layer: layer, mask: mask,
+        is_sensor: is_sensor,
         wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
         aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
         proxy_id: nil, dyn_proxy_id: nil,
@@ -361,6 +409,85 @@ module Physics
       shape[:mass] = 0.0
       shape[:inertia] = 0.0
       shape
+    end
+
+    # Chain shape — linked one-sided segments with ghost vertices for smooth collision.
+    # points: flat array [x0,y0, x1,y1, ...], minimum 4 points.
+    # For open chains (is_loop=false): first and last points are ghost-only (no collision edge).
+    # For closed chains (is_loop=true): all edges get collision, points wrap around.
+    # Returns an array of chain_segment shapes (already added to the world).
+    def create_chain world, body:, points:, is_loop: false, friction: 0.6, restitution: 0.0, rolling_resistance: 0.0, tangent_speed: 0.0, layer: 0xFFFF, mask: 0xFFFF
+      n = points.length / 2
+      return [] if n < 4
+      segments = []
+      if is_loop
+        i = 0
+        while i < n
+          g1i = ((i - 1) % n) * 2
+          p1i = i * 2
+          p2i = ((i + 1) % n) * 2
+          g2i = ((i + 2) % n) * 2
+          seg = _create_chain_segment(body,
+            points[g1i], points[g1i + 1],
+            points[p1i], points[p1i + 1],
+            points[p2i], points[p2i + 1],
+            points[g2i], points[g2i + 1],
+            friction, restitution, rolling_resistance, tangent_speed, layer, mask)
+          add_shape world, seg
+          segments << seg
+          i += 1
+        end
+      else
+        # Open chain: n-3 segments. points[0] and points[n-1] are ghost-only.
+        i = 0
+        while i < n - 3
+          g1i = i * 2
+          p1i = (i + 1) * 2
+          p2i = (i + 2) * 2
+          g2i = (i + 3) * 2
+          seg = _create_chain_segment(body,
+            points[g1i], points[g1i + 1],
+            points[p1i], points[p1i + 1],
+            points[p2i], points[p2i + 1],
+            points[g2i], points[g2i + 1],
+            friction, restitution, rolling_resistance, tangent_speed, layer, mask)
+          add_shape world, seg
+          segments << seg
+          i += 1
+        end
+      end
+      segments
+    end
+
+    # Remove all chain segment shapes returned by create_chain
+    def remove_chain world, segments
+      i = segments.length - 1
+      while i >= 0
+        remove_shape world, segments[i]
+        i -= 1
+      end
+      segments.clear
+    end
+
+    def _create_chain_segment body, g1x, g1y, p1x, p1y, p2x, p2y, g2x, g2y, friction, restitution, rolling_resistance, tangent_speed, layer, mask
+      {
+        type: :chain_segment, body: body,
+        x1: p1x.to_f, y1: p1y.to_f, x2: p2x.to_f, y2: p2y.to_f,
+        ghost1_x: g1x.to_f, ghost1_y: g1y.to_f,
+        ghost2_x: g2x.to_f, ghost2_y: g2y.to_f,
+        radius: 0.0,
+        friction: friction.to_f, restitution: restitution.to_f,
+        rolling_resistance: rolling_resistance.to_f, tangent_speed: tangent_speed.to_f,
+        density: 0.0,
+        layer: layer, mask: mask,
+        is_sensor: false,
+        wx1: 0.0, wy1: 0.0, wx2: 0.0, wy2: 0.0,
+        wg1x: 0.0, wg1y: 0.0, wg2x: 0.0, wg2y: 0.0,
+        aabb_x0: 0.0, aabb_y0: 0.0, aabb_x1: 0.0, aabb_y1: 0.0,
+        proxy_id: nil, dyn_proxy_id: nil,
+        fat_x0: 0.0, fat_y0: 0.0, fat_x1: 0.0, fat_y1: 0.0, aabb_margin: nil,
+        mass: 0.0, inertia: 0.0
+      }
     end
 
     def add_shape world, shape
@@ -374,6 +501,68 @@ module Physics
       end
       transform_shape shape, body
       shape
+    end
+
+    def simulate_sprite world, sprite
+      sw = (sprite[:w] || 0.0).to_f
+      sh = (sprite[:h] || 0.0).to_f
+      ax = (sprite[:anchor_x] || 0.0).to_f
+      ay = (sprite[:anchor_y] || 0.0).to_f
+      angle = (sprite[:angle] || 0.0).to_f * PI / 180.0
+
+      bx = (sprite[:x] || 0.0).to_f + (0.5 - ax) * sw
+      by = (sprite[:y] || 0.0).to_f + (0.5 - ay) * sh
+
+      body = create_body(x: bx, y: by, angle: angle, type: :dynamic)
+      add_body(world, body)
+
+      shape = create_box(body: body, w: sw, h: sh, density: 1.0)
+      add_shape(world, shape)
+
+      world[:simulated_sprites] ||= []
+      world[:simulated_sprites] << [sprite, body]
+
+      body
+    end
+
+    def simulate_sphere world, sprite
+      r = (sprite[:radius] || 0.0).to_f
+      sw = (sprite[:w] || r * 2.0).to_f
+      sh = (sprite[:h] || r * 2.0).to_f
+      ax = (sprite[:anchor_x] || 0.0).to_f
+      ay = (sprite[:anchor_y] || 0.0).to_f
+      angle = (sprite[:angle] || 0.0).to_f * PI / 180.0
+
+      bx = (sprite[:x] || 0.0).to_f + (0.5 - ax) * sw
+      by = (sprite[:y] || 0.0).to_f + (0.5 - ay) * sh
+
+      body = create_body(x: bx, y: by, angle: angle, type: :dynamic)
+      add_body(world, body)
+
+      shape = create_circle(body: body, radius: r, density: 1.0)
+      add_shape(world, shape)
+
+      world[:simulated_sprites] ||= []
+      world[:simulated_sprites] << [sprite, body]
+
+      body
+    end
+
+    def remove_simulated_sprite world, sprite
+      ss = world[:simulated_sprites]
+      if ss
+        i = ss.length - 1
+        while i >= 0
+          entry = ss[i]
+          if entry[0].equal?(sprite)
+            remove_body world, entry[1]
+            ss[i] = ss[ss.length - 1]
+            ss.pop
+            break
+          end
+          i -= 1
+        end
+      end
     end
 
     def transform_shape shape, body
@@ -402,6 +591,18 @@ module Physics
         shape[:wy1] = by + sin_a * lx1 + cos_a * ly1
         shape[:wx2] = bx + cos_a * lx2 - sin_a * ly2
         shape[:wy2] = by + sin_a * lx2 + cos_a * ly2
+      elsif t == :chain_segment
+        lx1 = shape[:x1]; ly1 = shape[:y1]; lx2 = shape[:x2]; ly2 = shape[:y2]
+        shape[:wx1] = bx + cos_a * lx1 - sin_a * ly1
+        shape[:wy1] = by + sin_a * lx1 + cos_a * ly1
+        shape[:wx2] = bx + cos_a * lx2 - sin_a * ly2
+        shape[:wy2] = by + sin_a * lx2 + cos_a * ly2
+        g1x = shape[:ghost1_x]; g1y = shape[:ghost1_y]
+        shape[:wg1x] = bx + cos_a * g1x - sin_a * g1y
+        shape[:wg1y] = by + sin_a * g1x + cos_a * g1y
+        g2x = shape[:ghost2_x]; g2y = shape[:ghost2_y]
+        shape[:wg2x] = bx + cos_a * g2x - sin_a * g2y
+        shape[:wg2y] = by + sin_a * g2x + cos_a * g2y
       end
     end
 
@@ -501,6 +702,7 @@ module Physics
       pl.clear
       world[:pairs].each_value do |v|
         next unless v[:touching]
+        next if v[:is_sensor]
         next if v[:body_a][:sleeping] || v[:body_b][:sleeping]
         pl << v
       end
@@ -509,6 +711,23 @@ module Physics
       Solver.fill_soft world[:static_softness], 2.0 * world[:hertz], world[:damping_ratio], h
       Solver.fill_soft world[:joint_softness], world[:joint_hertz], world[:joint_damping_ratio], h
       Solver.prepare_contacts world, h
+
+      # Pre-solve callback — allows disabling contacts before solving
+      cb_pre = world[:on_pre_solve]
+      if cb_pre
+        i = pl.length - 1
+        while i >= 0
+          p = pl[i]
+          result = cb_pre[0].send cb_pre[1], p[:body_a], p[:body_b], p
+          if result == false
+            # swap-remove from pair_list so solver skips this pair
+            pl[i] = pl[pl.length - 1]
+            pl.pop
+          end
+          i -= 1
+        end
+      end
+
       Joints.prepare_joints world, h
 
       i = 0
@@ -529,6 +748,7 @@ module Physics
         while iter < world[:velocity_iterations]
           Solver.solve_contacts world, inv_h, true
           Joints.solve_joints world, h, inv_h, true
+          enforce_motion_locks bodies
           iter += 1
         end
         integrate_positions world, h
@@ -536,12 +756,37 @@ module Physics
         while ri < world[:relax_iterations]
           Solver.solve_contacts world, inv_h, false
           Joints.solve_joints world, h, inv_h, false
+          enforce_motion_locks bodies
           ri += 1
         end
         sub_step += 1
       end
 
+      solve_continuous world, dt
       Solver.apply_restitution world
+
+      # Hit events — fire when approach speed exceeds threshold
+      cb_hit = world[:on_contact_hit]
+      hit_threshold = world[:hit_event_threshold]
+      pli = 0
+      while pli < pl.length
+        pair = pl[pli]; pli += 1
+        manifold = pair[:manifold]
+        points = manifold[:points]; pi = 0
+        while pi < points.length
+          cp = points[pi]; pi += 1
+          speed = -cp[:relative_velocity]
+          if speed > hit_threshold && cp[:total_normal_impulse] > 0.0
+            ba = pair[:body_a]; bb = pair[:body_b]
+            wx = ba[:x] + cp[:anchor_ax]; wy = ba[:y] + cp[:anchor_ay]
+            if cb_hit; cb_hit[0].send cb_hit[1], ba, bb, pair, wx, wy, speed; end
+            bcb = ba[:on_contact_hit]; if bcb; bcb[0].send bcb[1], ba, bb, pair, wx, wy, speed; end
+            bcb = bb[:on_contact_hit]; if bcb; bcb[0].send bcb[1], bb, ba, pair, wx, wy, speed; end
+            break
+          end
+        end
+      end
+
       finalize_positions world
 
       Islands.tick world, dt
@@ -551,6 +796,19 @@ module Physics
         b = bodies[i]
         b[:fx] = 0.0; b[:fy] = 0.0; b[:torque] = 0.0
         i += 1
+      end
+
+      ss = world[:simulated_sprites]
+      if ss
+        deg = 180.0 / PI
+        i = 0
+        while i < ss.length
+          entry = ss[i]; i += 1
+          s = entry[0]; b = entry[1]
+          s[:x] = b[:x] - (0.5 - (s[:anchor_x] || 0.0).to_f) * (s[:w] || 0.0).to_f
+          s[:y] = b[:y] - (0.5 - (s[:anchor_y] || 0.0).to_f) * (s[:h] || 0.0).to_f
+          s[:angle] = b[:angle] * deg
+        end
       end
     end
 
@@ -571,6 +829,9 @@ module Physics
         vx = h * (im * b[:fx] + gs * gx) + lin_damp * vx
         vy = h * (im * b[:fy] + gs * gy) + lin_damp * vy
         w = h * ii * b[:torque] + ang_damp * w
+        vx = 0.0 if b[:lock_linear_x]
+        vy = 0.0 if b[:lock_linear_y]
+        w = 0.0 if b[:lock_rotation]
         speed_sq = vx * vx + vy * vy
         if speed_sq > max_speed_sq
           ratio = max_speed / Math.sqrt(speed_sq)
@@ -599,6 +860,157 @@ module Physics
       end
     end
 
+    # Continuous collision detection for fast-moving dynamic bodies vs static geometry.
+    # Matches Box2D v3's b2SolveContinuous behavior.
+    # Runs after sub-step position integration. Clamps body displacement if tunneling
+    # would occur, leaving the body slightly past the surface (sep = -LINEAR_SLOP).
+    # Velocity is preserved — the next tick's solver will resolve the resulting contact.
+    def solve_continuous world, dt
+      bodies = world[:bodies]
+      bp = world[:broadphase]
+      st = bp[:static_tree]
+      return unless st  # only supported with dynamic_tree broadphase
+
+      i = 0
+      while i < bodies.length
+        b = bodies[i]; i += 1
+        next unless b[:type] == :dynamic
+        next if b[:sleeping]
+
+        dpx = b[:dpx]; dpy = b[:dpy]
+        disp_sq = dpx * dpx + dpy * dpy
+        next if disp_sq < 1e-10
+
+        # Trigger CCD when displacement > 0.5 * minExtent
+        # (Box2D's threshold for non-bullet bodies)
+        # Find the minimum extent across the body's shapes
+        min_extent = 1e18
+        shapes = world[:shapes]; si = 0
+        while si < shapes.length
+          s = shapes[si]; si += 1
+          next unless s[:body].equal?(b)
+          ext = case s[:type]
+                when :circle then s[:radius]
+                when :capsule then s[:radius]
+                when :polygon
+                  e = 1e18; verts = s[:vertices]; cnt = s[:count]; vi = 0
+                  while vi < cnt
+                    vi2 = vi * 2
+                    d = Math.sqrt(verts[vi2] * verts[vi2] + verts[vi2 + 1] * verts[vi2 + 1])
+                    e = d if d < e
+                    vi += 1
+                  end
+                  e
+                else 1e18
+                end
+          min_extent = ext if ext < min_extent
+        end
+        next if min_extent >= 1e18  # no shapes on this body
+        threshold = 0.5 * min_extent
+        next if disp_sq <= threshold * threshold
+
+        # Find minimum TOI across all shapes on this body vs static shapes
+        min_fraction = 1.0
+        si = 0
+        while si < shapes.length
+          s = shapes[si]; si += 1
+          next unless s[:body].equal?(b)
+          next if s[:is_sensor]
+
+          # Build proxy from shape's start-of-tick world coordinates
+          proxy_b = Collide.make_proxy(s, b)
+          next unless proxy_b
+
+          # Compute swept AABB to query static tree
+          ax0 = s[:aabb_x0]; ay0 = s[:aabb_y0]
+          ax1 = s[:aabb_x1]; ay1 = s[:aabb_y1]
+          ex = dpx; ey = dpy
+          sx0 = ax0 + (ex < 0 ? ex : 0); sy0 = ay0 + (ey < 0 ? ey : 0)
+          sx1 = ax1 + (ex > 0 ? ex : 0); sy1 = ay1 + (ey > 0 ? ey : 0)
+
+          # Query static tree for candidates
+          ccd_candidates = []
+          tree_query(st, sx0, sy0, sx1, sy1, s, ccd_candidates, {})
+
+          ci = 0
+          while ci < ccd_candidates.length
+            other = ccd_candidates[ci + 1]; ci += 2  # candidates store [s, other, ...]
+            next if other.equal?(s)
+            next if other[:is_sensor]
+            next if (s[:layer] & other[:mask]) == 0 || (other[:layer] & s[:mask]) == 0
+
+            proxy_a = Collide.make_proxy(other, other[:body])
+            next unless proxy_a
+
+            hit = Collide.shape_cast(proxy_a, proxy_b, dpx, dpy, min_fraction)
+            next unless hit && hit[:hit]
+
+            h_frac = hit[:fraction]
+
+            # On fraction == 0 the proxies already overlap, and shape_cast
+            # returns GJK's closest-feature direction rather than a surface
+            # normal — not safe to clamp on. Re-cast with a CORE proxy
+            # (small circle at the shape's centroid): a hit there is a
+            # genuine TOI. Mirrors Box2D v3's core-fraction fallback.
+            did_hit = false
+            if h_frac > 0.0 && h_frac < min_fraction
+              did_hit = true
+            elsif h_frac == 0.0
+              core_cx = (s[:aabb_x0] + s[:aabb_x1]) * 0.5
+              core_cy = (s[:aabb_y0] + s[:aabb_y1]) * 0.5
+              core_proxy = CCD_CORE_PROXY
+              core_proxy[:points_x][0] = core_cx
+              core_proxy[:points_y][0] = core_cy
+              core_proxy[:radius] = CCD_CORE_FRACTION * min_extent
+              core_hit = Collide.shape_cast(proxy_a, core_proxy, dpx, dpy, min_fraction)
+              if core_hit && core_hit[:hit] &&
+                 core_hit[:fraction] > 0.0 && core_hit[:fraction] < min_fraction
+                hit = core_hit; h_frac = core_hit[:fraction]; did_hit = true
+              end
+            end
+            next unless did_hit
+
+            # Pre-solve gate — lets callbacks (e.g. one-way platforms) veto
+            # the CCD clamp. Normal convention matches the discrete manifold.
+            cb_pre = world[:on_pre_solve]
+            if cb_pre
+              ccd_pair = CCD_PS_PAIR
+              ccd_pair[:body_a] = other[:body]; ccd_pair[:body_b] = b
+              ccd_pair[:shape_a] = other;       ccd_pair[:shape_b] = s
+              m = ccd_pair[:manifold]
+              m[:normal_x] = hit[:normal_x]; m[:normal_y] = hit[:normal_y]
+              accepted = cb_pre[0].send cb_pre[1], other[:body], b, ccd_pair
+              next if accepted == false
+            end
+
+            min_fraction = h_frac
+          end
+        end
+
+        if min_fraction < 1.0
+          # Clamp displacement to TOI fraction.
+          # shape_cast already targets distance = total_radius - LINEAR_SLOP,
+          # so the body ends slightly overlapping (sep = -LINEAR_SLOP) at the TOI fraction,
+          # ensuring next tick's find_contacts detects it.
+          b[:dpx] = dpx * min_fraction
+          b[:dpy] = dpy * min_fraction
+        end
+      end
+    end
+
+    def enforce_motion_locks bodies
+      i = 0
+      while i < bodies.length
+        b = bodies[i]; i += 1
+        next unless b[:type] == :dynamic
+        next if b[:sleeping]
+        next unless b[:lock_linear_x] || b[:lock_linear_y] || b[:lock_rotation]
+        b[:vx] = 0.0 if b[:lock_linear_x]
+        b[:vy] = 0.0 if b[:lock_linear_y]
+        b[:w] = 0.0 if b[:lock_rotation]
+      end
+    end
+
     def finalize_positions world
       bodies = world[:bodies]
       i = 0
@@ -624,11 +1036,11 @@ module Physics
 
     def apply_impulse world, body, ix, iy, px = nil, py = nil
       Islands.wake_body world, body if body[:sleeping]
-      body[:vx] += body[:inv_mass] * ix.to_f
-      body[:vy] += body[:inv_mass] * iy.to_f
+      body[:vx] += body[:inv_mass] * ix.to_f unless body[:lock_linear_x]
+      body[:vy] += body[:inv_mass] * iy.to_f unless body[:lock_linear_y]
       if px && py
         rx = px.to_f - body[:x]; ry = py.to_f - body[:y]
-        body[:w] += body[:inv_inertia] * (rx * iy.to_f - ry * ix.to_f)
+        body[:w] += body[:inv_inertia] * (rx * iy.to_f - ry * ix.to_f) unless body[:lock_rotation]
       end
     end
 
@@ -933,6 +1345,18 @@ module Physics
           s[:wy1] = by + sin_a * lx1 + cos_a * ly1
           s[:wx2] = bx + cos_a * lx2 - sin_a * ly2
           s[:wy2] = by + sin_a * lx2 + cos_a * ly2
+        elsif t == :chain_segment
+          lx1 = s[:x1]; ly1 = s[:y1]; lx2 = s[:x2]; ly2 = s[:y2]
+          s[:wx1] = bx + cos_a * lx1 - sin_a * ly1
+          s[:wy1] = by + sin_a * lx1 + cos_a * ly1
+          s[:wx2] = bx + cos_a * lx2 - sin_a * ly2
+          s[:wy2] = by + sin_a * lx2 + cos_a * ly2
+          g1x = s[:ghost1_x]; g1y = s[:ghost1_y]
+          s[:wg1x] = bx + cos_a * g1x - sin_a * g1y
+          s[:wg1y] = by + sin_a * g1x + cos_a * g1y
+          g2x = s[:ghost2_x]; g2y = s[:ghost2_y]
+          s[:wg2x] = bx + cos_a * g2x - sin_a * g2y
+          s[:wg2y] = by + sin_a * g2x + cos_a * g2y
         end
       end
     end
@@ -963,7 +1387,7 @@ module Physics
         end
         shape[:aabb_x0] = min_x; shape[:aabb_y0] = min_y
         shape[:aabb_x1] = max_x; shape[:aabb_y1] = max_y
-      elsif t == :capsule || t == :segment
+      elsif t == :capsule || t == :segment || t == :chain_segment
         wx1 = shape[:wx1] || 0; wy1 = shape[:wy1] || 0
         wx2 = shape[:wx2] || 0; wy2 = shape[:wy2] || 0
         r = shape[:radius]
@@ -1437,7 +1861,7 @@ module Physics
           d = vx * vx + vy * vy; ext = d if d > ext; i += 1
         end
         ext = Math.sqrt(ext)
-      elsif t == :segment
+      elsif t == :segment || t == :chain_segment
         dx = shape[:x2] - shape[:x1]; dy = shape[:y2] - shape[:y1]
         ext = Math.sqrt(dx * dx + dy * dy) * 0.5
       else
@@ -1455,9 +1879,13 @@ module Physics
         while i < n
           s = shapes[i]; b = s[:body]
           if b[:type] == :static || b[:sleeping]
-            compute_aabb s, b; pad = SPECULATIVE_DISTANCE
-            s[:proxy_id] = tree_create_proxy st, s,
-              s[:aabb_x0] - pad, s[:aabb_y0] - pad, s[:aabb_x1] + pad, s[:aabb_y1] + pad
+            compute_aabb s, b
+            margin = s[:aabb_margin] ||= compute_aabb_margin(s)
+            pad = SPECULATIVE_DISTANCE + margin
+            fx0 = s[:aabb_x0] - pad; fy0 = s[:aabb_y0] - pad
+            fx1 = s[:aabb_x1] + pad; fy1 = s[:aabb_y1] + pad
+            s[:proxy_id] = tree_create_proxy st, s, fx0, fy0, fx1, fy1
+            s[:fat_x0] = fx0; s[:fat_y0] = fy0; s[:fat_x1] = fx1; s[:fat_y1] = fy1
           end
           i += 1
         end
@@ -1513,6 +1941,8 @@ module Physics
       cb_begin   = world[:on_contact_begin]
       cb_persist = world[:on_contact_persist]
       cb_end     = world[:on_contact_end]
+      cb_sensor_begin = world[:on_sensor_begin]
+      cb_sensor_end   = world[:on_sensor_end]
       seen = bp[:seen]
       candidates = bp[:candidates]
       n = shapes.length
@@ -1549,6 +1979,8 @@ module Physics
         next if ba[:type] != :dynamic && bb[:type] != :dynamic
         next if ba[:sleeping] && bb[:sleeping]
 
+        is_sensor = sa[:is_sensor] || sb[:is_sensor]
+
         key = Physics.pair_key(sa, sb)
 
         pair = pairs[key]
@@ -1560,79 +1992,99 @@ module Physics
           manifold = Collide.collide pa, pa[:body], pb, pb[:body]
           was_touching = pair[:touching]
           if manifold
-            # update manifold with warm-started impulses
-            old_m = pair[:manifold]
-            old_points = old_m[:points]
-            new_points = manifold[:points]
-            pi = 0
-            while pi < new_points.length
-              np = new_points[pi]; oi = 0
-              while oi < old_points.length
-                op = old_points[oi]
-                if op[:id] == np[:id]
-                  np[:normal_impulse] = op[:normal_impulse]
-                  np[:tangent_impulse] = op[:tangent_impulse]
-                  break
+            if is_sensor
+              # Return collide's scratch points to pool — sensor pairs don't use them
+              scratch = manifold[:points]
+              while scratch.length > 0; CONTACT_POOL << scratch.pop; end
+            end
+            unless is_sensor
+              # update manifold with warm-started impulses
+              old_m = pair[:manifold]
+              old_points = old_m[:points]
+              new_points = manifold[:points]
+              pi = 0
+              while pi < new_points.length
+                np = new_points[pi]; oi = 0
+                while oi < old_points.length
+                  op = old_points[oi]
+                  if op[:id] == np[:id]
+                    np[:normal_impulse] = op[:normal_impulse]
+                    np[:tangent_impulse] = op[:tangent_impulse]
+                    break
+                  end
+                  oi += 1
                 end
-                oi += 1
+                pi += 1
               end
-              pi += 1
+              while old_points.length > 0; CONTACT_POOL << old_points.pop; end
+              old_m[:normal_x] = manifold[:normal_x]; old_m[:normal_y] = manifold[:normal_y]
+              old_m[:friction] = manifold[:friction]; old_m[:restitution] = manifold[:restitution]
+              rr_a = sa[:rolling_resistance]; rr_b = sb[:rolling_resistance]
+              if rr_a > 0.0 || rr_b > 0.0
+                max_r = sa[:radius] > sb[:radius] ? sa[:radius] : sb[:radius]
+                pair[:rolling_resistance] = (rr_a > rr_b ? rr_a : rr_b) * max_r
+              else
+                pair[:rolling_resistance] = 0.0
+              end
+              pair[:tangent_speed] = sa[:tangent_speed] + sb[:tangent_speed]
+              pi = 0
+              while pi < new_points.length; old_points << new_points[pi]; pi += 1; end
+              new_points.clear
             end
-            while old_points.length > 0; CONTACT_POOL << old_points.pop; end
-            old_m[:normal_x] = manifold[:normal_x]; old_m[:normal_y] = manifold[:normal_y]
-            old_m[:friction] = manifold[:friction]; old_m[:restitution] = manifold[:restitution]
-            rr_a = sa[:rolling_resistance]; rr_b = sb[:rolling_resistance]
-            if rr_a > 0.0 || rr_b > 0.0
-              max_r = sa[:radius] > sb[:radius] ? sa[:radius] : sb[:radius]
-              pair[:rolling_resistance] = (rr_a > rr_b ? rr_a : rr_b) * max_r
-            else
-              pair[:rolling_resistance] = 0.0
-            end
-            pair[:tangent_speed] = sa[:tangent_speed] + sb[:tangent_speed]
-            pi = 0
-            while pi < new_points.length; old_points << new_points[pi]; pi += 1; end
-            new_points.clear
             unless was_touching
               pair[:touching] = true
-              Islands.link_contact world, pair
-              if cb_begin; cb_begin[0].send cb_begin[1], ba, bb, pair; end
-              bcb = ba[:on_contact_begin]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
-              bcb = bb[:on_contact_begin]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
+              if is_sensor
+                if cb_sensor_begin; cb_sensor_begin[0].send cb_sensor_begin[1], ba, bb, pair; end
+                bcb = ba[:on_sensor_begin]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
+                bcb = bb[:on_sensor_begin]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
+              else
+                Islands.link_contact world, pair
+                if cb_begin; cb_begin[0].send cb_begin[1], ba, bb, pair; end
+                bcb = ba[:on_contact_begin]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
+                bcb = bb[:on_contact_begin]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
+              end
             else
-              if cb_persist; cb_persist[0].send cb_persist[1], ba, bb, pair; end
-              bcb = ba[:on_contact_persist]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
-              bcb = bb[:on_contact_persist]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
+              unless is_sensor
+                if cb_persist; cb_persist[0].send cb_persist[1], ba, bb, pair; end
+                bcb = ba[:on_contact_persist]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
+                bcb = bb[:on_contact_persist]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
+              end
             end
           else
             if was_touching
-              if cb_end; cb_end[0].send cb_end[1], ba, bb, pair; end
-              bcb = ba[:on_contact_end]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
-              bcb = bb[:on_contact_end]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
+              if is_sensor
+                if cb_sensor_end; cb_sensor_end[0].send cb_sensor_end[1], ba, bb, pair; end
+                bcb = ba[:on_sensor_end]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
+                bcb = bb[:on_sensor_end]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
+              else
+                if cb_end; cb_end[0].send cb_end[1], ba, bb, pair; end
+                bcb = ba[:on_contact_end]; if bcb; bcb[0].send bcb[1], ba, bb, pair; end
+                bcb = bb[:on_contact_end]; if bcb; bcb[0].send bcb[1], bb, ba, pair; end
+                Islands.unlink_contact world, pair
+              end
               pair[:touching] = false
-              Islands.unlink_contact world, pair
               pts = pair[:manifold][:points]
               while pts.length > 0; CONTACT_POOL << pts.pop; end
             end
           end
         else
           # new candidate — narrowphase decides
+          # Canonicalize by BODY object_id BEFORE collide so clip_polygons sees the
+          # same reference polygon as Box2D (which uses body-index ordering).
+          # Bodies are created in deterministic order, so body.object_id ordering
+          # matches Box2D's body-index ordering. This ensures that within a 2-point
+          # face-to-face manifold, the contact points come out in the same tangent
+          # order as Box2D and the sequential PGS solver gets the same per-point bias.
+          if ba[:index] > bb[:index]
+            sa, sb = sb, sa
+            ba, bb = bb, ba
+          end
           manifold = Collide.collide sa, ba, sb, bb
           next unless manifold
-          flip = sa.object_id >= sb.object_id
           new_nx = manifold[:normal_x]; new_ny = manifold[:normal_y]
           new_fr = manifold[:friction]; new_re = manifold[:restitution]
-          if flip
-            new_nx = -new_nx; new_ny = -new_ny
-            mpts = manifold[:points]; mpi = 0
-            while mpi < mpts.length
-              mp = mpts[mpi]
-              mp[:anchor_ax], mp[:anchor_bx] = mp[:anchor_bx], mp[:anchor_ax]
-              mp[:anchor_ay], mp[:anchor_by] = mp[:anchor_by], mp[:anchor_ay]
-              mpi += 1
-            end
-          end
-          s1 = flip ? sb : sa; s2 = flip ? sa : sb
-          b1 = s1[:body]; b2 = s2[:body]
+          s1 = sa; s2 = sb
+          b1 = ba; b2 = bb
           rr_a = sa[:rolling_resistance]; rr_b = sb[:rolling_resistance]
           if rr_a > 0.0 || rr_b > 0.0
             max_r = sa[:radius] > sb[:radius] ? sa[:radius] : sb[:radius]
@@ -1646,6 +2098,9 @@ module Physics
             new_pair[:shape_a] = s1; new_pair[:shape_b] = s2
             new_pair[:body_a] = b1; new_pair[:body_b] = b2
             nm = new_pair[:manifold]
+            # Return any leftover pooled points before reuse
+            old_pts = nm[:points]
+            while old_pts.length > 0; CONTACT_POOL << old_pts.pop; end
             nm[:normal_x] = new_nx; nm[:normal_y] = new_ny
             nm[:friction] = new_fr; nm[:restitution] = new_re
             src_pts = manifold[:points]; spi = 0
@@ -1653,6 +2108,7 @@ module Physics
             src_pts.clear
             new_pair[:stale] = false
             new_pair[:touching] = true
+            new_pair[:is_sensor] = is_sensor
             new_pair[:rolling_resistance] = new_rr
             new_pair[:rolling_impulse] = 0.0
             new_pair[:tangent_speed] = new_ts
@@ -1667,14 +2123,21 @@ module Physics
                                      friction: new_fr, restitution: new_re,
                                      points: nm_points },
                          stale: false, touching: true,
+                         is_sensor: is_sensor,
                          rolling_resistance: new_rr, rolling_impulse: 0.0,
                          tangent_speed: new_ts }
           end
           pairs[key] = new_pair
-          Islands.link_contact world, new_pair
-          if cb_begin; cb_begin[0].send cb_begin[1], b1, b2, new_pair; end
-          bcb = b1[:on_contact_begin]; if bcb; bcb[0].send bcb[1], b1, b2, new_pair; end
-          bcb = b2[:on_contact_begin]; if bcb; bcb[0].send bcb[1], b2, b1, new_pair; end
+          if is_sensor
+            if cb_sensor_begin; cb_sensor_begin[0].send cb_sensor_begin[1], b1, b2, new_pair; end
+            bcb = b1[:on_sensor_begin]; if bcb; bcb[0].send bcb[1], b1, b2, new_pair; end
+            bcb = b2[:on_sensor_begin]; if bcb; bcb[0].send bcb[1], b2, b1, new_pair; end
+          else
+            Islands.link_contact world, new_pair
+            if cb_begin; cb_begin[0].send cb_begin[1], b1, b2, new_pair; end
+            bcb = b1[:on_contact_begin]; if bcb; bcb[0].send bcb[1], b1, b2, new_pair; end
+            bcb = b2[:on_contact_begin]; if bcb; bcb[0].send bcb[1], b2, b1, new_pair; end
+          end
         end
       end
 
@@ -1683,10 +2146,16 @@ module Physics
         if v[:stale]
           if v[:touching]
             sba = v[:body_a]; sbb = v[:body_b]
-            if cb_end; cb_end[0].send cb_end[1], sba, sbb, v; end
-            bcb = sba[:on_contact_end]; if bcb; bcb[0].send bcb[1], sba, sbb, v; end
-            bcb = sbb[:on_contact_end]; if bcb; bcb[0].send bcb[1], sbb, sba, v; end
-            Islands.unlink_contact world, v
+            if v[:is_sensor]
+              if cb_sensor_end; cb_sensor_end[0].send cb_sensor_end[1], sba, sbb, v; end
+              bcb = sba[:on_sensor_end]; if bcb; bcb[0].send bcb[1], sba, sbb, v; end
+              bcb = sbb[:on_sensor_end]; if bcb; bcb[0].send bcb[1], sbb, sba, v; end
+            else
+              if cb_end; cb_end[0].send cb_end[1], sba, sbb, v; end
+              bcb = sba[:on_contact_end]; if bcb; bcb[0].send bcb[1], sba, sbb, v; end
+              bcb = sbb[:on_contact_end]; if bcb; bcb[0].send bcb[1], sbb, sba, v; end
+              Islands.unlink_contact world, v
+            end
           end
           pts = v[:manifold][:points]
           while pts.length > 0; CONTACT_POOL << pts.pop; end
@@ -1699,7 +2168,7 @@ module Physics
   end
 
 module Collide
-  TYPE_ORDER = { circle: 0, capsule: 1, polygon: 2, segment: 3 }
+  TYPE_ORDER = { circle: 0, capsule: 1, polygon: 2, segment: 3, chain_segment: 4 }
 
   class << self
 
@@ -1715,7 +2184,7 @@ module Collide
         flipped = false
       end
 
-      key = oa * 4 + ob
+      key = oa * 5 + ob
       inner_flip = false
       m = case key
           when 0  then collide_circle_circle shape_a, body_a, shape_b, body_b
@@ -1728,19 +2197,29 @@ module Collide
           when 3
             inner_flip = true
             collide_segment_circle shape_b, body_b, shape_a, body_a
-          when 5  then collide_capsule_capsule shape_a, body_a, shape_b, body_b
-          when 6
+          when 4
             inner_flip = true
-            collide_polygon_capsule shape_b, body_b, shape_a, body_a
+            collide_chain_segment_circle shape_b, body_b, shape_a, body_a
+          when 6  then collide_capsule_capsule shape_a, body_a, shape_b, body_b
           when 7
             inner_flip = true
+            collide_polygon_capsule shape_b, body_b, shape_a, body_a
+          when 8
+            inner_flip = true
             collide_segment_capsule shape_b, body_b, shape_a, body_a
-          when 10 then collide_polygon_polygon shape_a, body_a, shape_b, body_b
-          when 11
+          when 9
+            inner_flip = true
+            collide_chain_segment_capsule shape_b, body_b, shape_a, body_a
+          when 12 then collide_polygon_polygon shape_a, body_a, shape_b, body_b
+          when 13
             inner_flip = true
             collide_segment_polygon shape_b, body_b, shape_a, body_a
-          when 13 then collide_segment_polygon shape_a, body_a, shape_b, body_b
-          when 15 then collide_segment_segment shape_a, body_a, shape_b, body_b
+          when 14
+            inner_flip = true
+            collide_chain_segment_polygon shape_b, body_b, shape_a, body_a
+          when 15 then collide_segment_polygon shape_a, body_a, shape_b, body_b
+          when 18 then collide_segment_segment shape_a, body_a, shape_b, body_b
+          # chain_segment vs segment (19) and chain_segment vs chain_segment (24): skip
           else nil
           end
       return nil unless m
@@ -1799,25 +2278,26 @@ module Collide
       if denom.abs < 1e-20
         best_dsq = 1e18
         best_pax = a1x; best_pay = a1y; best_pbx = b1x; best_pby = b1y
-        # candidate 1: a1 → segment b
+        best_ta = 0.0; best_tb = 0.0
+        # candidate 1: a1 → segment b (ta = 0, tb = fraction of projection on b)
         closest_point_on_segment b1x, b1y, b2x, b2y, a1x, a1y
         ddx = a1x - CP_RESULT[0]; ddy = a1y - CP_RESULT[1]; dsq = ddx * ddx + ddy * ddy
-        if dsq < best_dsq; best_dsq = dsq; best_pax = a1x; best_pay = a1y; best_pbx = CP_RESULT[0]; best_pby = CP_RESULT[1]; end
-        # candidate 2: a2 → segment b
+        if dsq < best_dsq; best_dsq = dsq; best_pax = a1x; best_pay = a1y; best_pbx = CP_RESULT[0]; best_pby = CP_RESULT[1]; best_ta = 0.0; best_tb = CP_RESULT[2]; end
+        # candidate 2: a2 → segment b (ta = 1)
         closest_point_on_segment b1x, b1y, b2x, b2y, a2x, a2y
         ddx = a2x - CP_RESULT[0]; ddy = a2y - CP_RESULT[1]; dsq = ddx * ddx + ddy * ddy
-        if dsq < best_dsq; best_dsq = dsq; best_pax = a2x; best_pay = a2y; best_pbx = CP_RESULT[0]; best_pby = CP_RESULT[1]; end
-        # candidate 3: b1 → segment a
+        if dsq < best_dsq; best_dsq = dsq; best_pax = a2x; best_pay = a2y; best_pbx = CP_RESULT[0]; best_pby = CP_RESULT[1]; best_ta = 1.0; best_tb = CP_RESULT[2]; end
+        # candidate 3: b1 → segment a (tb = 0)
         closest_point_on_segment a1x, a1y, a2x, a2y, b1x, b1y
         ddx = b1x - CP_RESULT[0]; ddy = b1y - CP_RESULT[1]; dsq = ddx * ddx + ddy * ddy
-        if dsq < best_dsq; best_dsq = dsq; best_pax = CP_RESULT[0]; best_pay = CP_RESULT[1]; best_pbx = b1x; best_pby = b1y; end
-        # candidate 4: b2 → segment a
+        if dsq < best_dsq; best_dsq = dsq; best_pax = CP_RESULT[0]; best_pay = CP_RESULT[1]; best_pbx = b1x; best_pby = b1y; best_ta = CP_RESULT[2]; best_tb = 0.0; end
+        # candidate 4: b2 → segment a (tb = 1)
         closest_point_on_segment a1x, a1y, a2x, a2y, b2x, b2y
         ddx = b2x - CP_RESULT[0]; ddy = b2y - CP_RESULT[1]; dsq = ddx * ddx + ddy * ddy
-        if dsq < best_dsq; best_dsq = dsq; best_pax = CP_RESULT[0]; best_pay = CP_RESULT[1]; best_pbx = b2x; best_pby = b2y; end
+        if dsq < best_dsq; best_dsq = dsq; best_pax = CP_RESULT[0]; best_pay = CP_RESULT[1]; best_pbx = b2x; best_pby = b2y; best_ta = CP_RESULT[2]; best_tb = 1.0; end
         CPS_RESULT[0] = best_pax; CPS_RESULT[1] = best_pay
         CPS_RESULT[2] = best_pbx; CPS_RESULT[3] = best_pby
-        CPS_RESULT[4] = 0.0; CPS_RESULT[5] = 0.0
+        CPS_RESULT[4] = best_ta; CPS_RESULT[5] = best_tb
         return
       end
       d1d = d1x * dx + d1y * dy; d2d = d2x * dx + d2y * dy
@@ -1905,16 +2385,20 @@ module Collide
       return nil if d2a > d1a || d2b < d1b
 
       denom = d2b - d2a
-      return nil if denom.abs < 1e-10
+      # When both incident vertices project to the same reference tangent
+      # (e.g. vertical capsule meeting a horizontal surface), treat both
+      # endpoints as independent contact candidates; the speculative/radius
+      # checks below drop any point not actually in contact.
+      degenerate_incident = denom.abs < 1e-10
       e1_inv = 1.0 / (d1b - d1a + Float::MIN)
-      e2_inv = 1.0 / denom
+      e2_inv = degenerate_incident ? 0.0 : 1.0 / denom
 
       spec = Physics::SPECULATIVE_DISTANCE
       MR[:points].clear
 
       # Contact 1: e1.a <-> e2.b
       t1 = ((d2b - d1a) * e1_inv).clamp(0, 1)
-      t2 = ((d1a - d2a) * e2_inv).clamp(0, 1)
+      t2 = degenerate_incident ? 1.0 : ((d1a - d2a) * e2_inv).clamp(0, 1)
       e1dx = e1bx - e1ax; e1dy = e1by - e1ay
       e2dx = e2bx - e2ax; e2dy = e2by - e2ay
       p1x = e1ax + t1 * e1dx + r1 * nx
@@ -1929,7 +2413,7 @@ module Collide
 
       # Contact 2: e1.b <-> e2.a
       t3 = ((d2a - d1a) * e1_inv).clamp(0, 1)
-      t4 = ((d1b - d2a) * e2_inv).clamp(0, 1)
+      t4 = degenerate_incident ? 0.0 : ((d1b - d2a) * e2_inv).clamp(0, 1)
       p1x = e1ax + t3 * e1dx + r1 * nx
       p1y = e1ay + t3 * e1dy + r1 * ny
       p2x = e2ax + t4 * e2dx - r2 * nx
@@ -1979,6 +2463,69 @@ module Collide
           if d < min_dot; min_dot = d; edge_a = j; end
           j += 1
         end
+      end
+
+      # When SAT reports substantial separation, a straight edge-edge clip
+      # can miss corner contacts. Try the clip and a segment-distance
+      # vertex-vertex candidate; take whichever gives the smaller
+      # separation. Mirrors Box2D v3's b2CollidePolygons two-tier path.
+      if sep_a > 0.1 * Physics::LINEAR_SLOP || sep_b > 0.1 * Physics::LINEAR_SLOP
+        i11 = edge_a; i12 = edge_a + 1 < ca ? edge_a + 1 : 0
+        i21 = edge_b; i22 = edge_b + 1 < cb ? edge_b + 1 : 0
+        v11x = va[i11 * 2]; v11y = va[i11 * 2 + 1]
+        v12x = va[i12 * 2]; v12y = va[i12 * 2 + 1]
+        v21x = vb[i21 * 2]; v21y = vb[i21 * 2 + 1]
+        v22x = vb[i22 * 2]; v22y = vb[i22 * 2 + 1]
+
+        closest_points_segments v11x, v11y, v12x, v12y, v21x, v21y, v22x, v22y
+        pax = CPS_RESULT[0]; pay = CPS_RESULT[1]
+        pbx = CPS_RESULT[2]; pby = CPS_RESULT[3]
+        ta = CPS_RESULT[4]; tb = CPS_RESULT[5]
+
+        ddx = pbx - pax; ddy = pby - pay
+        dist_sq = ddx * ddx + ddy * ddy
+        return nil if dist_sq < 1e-20
+        distance = Math.sqrt(dist_sq)
+        vv_separation = distance - radius
+        return nil if vv_separation > Physics::SPECULATIVE_DISTANCE
+
+        clip_m = clip_polygons va, na, ca, ra, vb, nb, cb, rb, edge_a, edge_b, flip
+        min_clip_sep = 1e18
+        if clip_m
+          pts = clip_m[:points]; pi = 0
+          while pi < pts.length
+            s = pts[pi][:separation]; min_clip_sep = s if s < min_clip_sep
+            pi += 1
+          end
+        end
+
+        # Use the VV fallback only when segment-distance shows a
+        # substantially smaller separation AND both fractions are at
+        # segment endpoints (a true corner-corner pair).
+        if vv_separation + 0.1 * Physics::LINEAR_SLOP < min_clip_sep &&
+           (ta == 0.0 || ta == 1.0) && (tb == 0.0 || tb == 1.0)
+          if ta == 0.0
+            ref_vx = v11x; ref_vy = v11y; ref_idx = i11
+          else
+            ref_vx = v12x; ref_vy = v12y; ref_idx = i12
+          end
+          if tb == 0.0
+            inc_vx = v21x; inc_vy = v21y; inc_idx = i21
+          else
+            inc_vx = v22x; inc_vy = v22y; inc_idx = i22
+          end
+          inv_dist = 1.0 / distance
+          nx = (inc_vx - ref_vx) * inv_dist; ny = (inc_vy - ref_vy) * inv_dist
+          c1x = ref_vx + ra * nx; c1y = ref_vy + ra * ny
+          c2x = inc_vx - rb * nx; c2y = inc_vy - rb * ny
+          MR[:normal_x] = nx; MR[:normal_y] = ny
+          MR[:points].clear
+          MR[:points] << make_contact_point((c1x + c2x) * 0.5, (c1y + c2y) * 0.5,
+                                            0, 0, vv_separation,
+                                            (ref_idx << 8) | inc_idx)
+          return MR
+        end
+        return clip_m
       end
 
       clip_polygons va, na, ca, ra, vb, nb, cb, rb, edge_a, edge_b, flip
@@ -2254,6 +2801,404 @@ module Collide
       MR
     end
 
+    # ---- Chain Segment Collision ----
+    # Chain segments are one-sided and use ghost vertices for smooth collision.
+
+    CONVEX_TOL = 0.01
+
+    # Gauss map normal classification for smooth chain collision
+    # Returns :skip, :admit, or :snap
+    def classify_normal edge1x, edge1y, normal0x, normal0y, normal2x, normal2y, convex1, convex2, nx, ny
+      # dot(normal, edge1) — determines which end of the segment the normal points toward
+      dot_e1 = nx * edge1x + ny * edge1y
+      if dot_e1 <= 0.0
+        # Normal points toward p1 (tail)
+        if convex1
+          # cross(normal, normal0)
+          cross = nx * normal0y - ny * normal0x
+          return :skip if cross > CONVEX_TOL
+          :admit
+        else
+          :snap
+        end
+      else
+        # Normal points toward p2 (head)
+        if convex2
+          # cross(normal2, normal)
+          cross = normal2x * ny - normal2y * nx
+          return :skip if cross > CONVEX_TOL
+          :admit
+        else
+          :snap
+        end
+      end
+    end
+
+    # Compute smooth params from ghost vertices (all in world space)
+    def chain_smooth_params p1x, p1y, p2x, p2y, g1x, g1y, g2x, g2y
+      # edge1 = normalize(p2 - p1)
+      e1x = p2x - p1x; e1y = p2y - p1y
+      len = Math.sqrt(e1x * e1x + e1y * e1y)
+      if len > 1e-10; inv = 1.0 / len; e1x *= inv; e1y *= inv
+      else e1x = 1.0; e1y = 0.0; end
+
+      # edge0 = normalize(p1 - ghost1)
+      e0x = p1x - g1x; e0y = p1y - g1y
+      len = Math.sqrt(e0x * e0x + e0y * e0y)
+      if len > 1e-10; inv = 1.0 / len; e0x *= inv; e0y *= inv
+      else e0x = 1.0; e0y = 0.0; end
+
+      # edge2 = normalize(ghost2 - p2)
+      e2x = g2x - p2x; e2y = g2y - p2y
+      len = Math.sqrt(e2x * e2x + e2y * e2y)
+      if len > 1e-10; inv = 1.0 / len; e2x *= inv; e2y *= inv
+      else e2x = 1.0; e2y = 0.0; end
+
+      # normal0 = rightPerp(edge0) = (e0y, -e0x)
+      n0x = e0y; n0y = -e0x
+      # normal2 = rightPerp(edge2)
+      n2x = e2y; n2y = -e2x
+      # convex1 = cross(edge0, edge1) >= convexTol
+      convex1 = (e0x * e1y - e0y * e1x) >= CONVEX_TOL
+      # convex2 = cross(edge1, edge2) >= convexTol
+      convex2 = (e1x * e2y - e1y * e2x) >= CONVEX_TOL
+
+      [e1x, e1y, n0x, n0y, n2x, n2y, convex1, convex2]
+    end
+
+    # Chain Segment vs Circle
+    def collide_chain_segment_circle ss, bs, sc, bc
+      p1x = ss[:wx1]; p1y = ss[:wy1]; p2x = ss[:wx2]; p2y = ss[:wy2]
+      cx = bc[:x] + sc[:offset_x]; cy = bc[:y] + sc[:offset_y]
+
+      # Edge direction
+      ex = p2x - p1x; ey = p2y - p1y
+
+      # One-sided: rightPerp(e) = (ey, -ex), dot with (center - p1)
+      rpx = ey; rpy = -ex
+      offset = rpx * (cx - p1x) + rpy * (cy - p1y)
+      return nil if offset < 0.0
+
+      # Barycentric coordinates on segment
+      u = ex * (p2x - cx) + ey * (p2y - cy)
+      v = ex * (cx - p1x) + ey * (cy - p1y)
+
+      if v <= 0.0
+        # Before p1 — check Voronoi region with ghost1
+        pe_x = p1x - ss[:wg1x]; pe_y = p1y - ss[:wg1y]
+        u_prev = pe_x * (cx - p1x) + pe_y * (cy - p1y)
+        return nil if u_prev <= 0.0
+        pax = p1x; pay = p1y
+      elsif u <= 0.0
+        # After p2 — check Voronoi region with ghost2
+        ne_x = ss[:wg2x] - p2x; ne_y = ss[:wg2y] - p2y
+        v_next = ne_x * (cx - p2x) + ne_y * (cy - p2y)
+        return nil if v_next > 0.0
+        pax = p2x; pay = p2y
+      else
+        # Projects onto segment
+        ee = ex * ex + ey * ey
+        if ee > 0.0
+          inv_ee = 1.0 / ee
+          pax = (u * p1x + v * p2x) * inv_ee
+          pay = (u * p1y + v * p2y) * inv_ee
+        else
+          pax = p1x; pay = p1y
+        end
+      end
+
+      dx = cx - pax; dy = cy - pay
+      dist = Math.sqrt(dx * dx + dy * dy)
+      radius = sc[:radius]
+      separation = dist - radius
+      return nil if separation > Physics::SPECULATIVE_DISTANCE
+
+      if dist < 1e-10
+        nx = rpx; ny = rpy
+        len = Math.sqrt(nx * nx + ny * ny)
+        if len > 1e-10; nx /= len; ny /= len; else nx = 0.0; ny = 1.0; end
+      else
+        nx = dx / dist; ny = dy / dist
+      end
+
+      sbx = cx - radius * nx; sby = cy - radius * ny
+      px = (pax + sbx) * 0.5; py = (pay + sby) * 0.5
+      MR[:normal_x] = nx; MR[:normal_y] = ny
+      MR[:friction] = Math.sqrt(ss[:friction] * sc[:friction])
+      MR[:restitution] = (ss[:restitution] > sc[:restitution] ? ss[:restitution] : sc[:restitution])
+      MR[:points].clear
+      MR[:points] << make_contact_point(px - bs[:x], py - bs[:y], px - bc[:x], py - bc[:y], separation, 0)
+      MR
+    end
+
+    # Chain Segment vs Capsule — convert capsule to polygon and delegate
+    def collide_chain_segment_capsule ss, bs, sc, bc
+      fill_capsule CAP_VERTS_B, CAP_NORMS_B, sc[:wx1], sc[:wy1], sc[:wx2], sc[:wy2], sc[:radius]
+      px = [CAP_VERTS_B[0], CAP_VERTS_B[2]]; py = [CAP_VERTS_B[1], CAP_VERTS_B[3]]
+      nx = [CAP_NORMS_B[0], CAP_NORMS_B[2]]; ny = [CAP_NORMS_B[1], CAP_NORMS_B[3]]
+      collide_chain_segment_polygon_impl ss, bs, px, py, nx, ny, 2, sc[:radius], bc, sc[:friction], sc[:restitution]
+    end
+
+    # Chain Segment vs Polygon
+    def collide_chain_segment_polygon ss, bs, sp, bp
+      wv = sp[:world_vertices]; wn = sp[:world_normals]; c = sp[:count]
+      px = []; py = []; nx = []; ny = []; i = 0
+      while i < c; i2 = i * 2; px << wv[i2]; py << wv[i2+1]; nx << wn[i2]; ny << wn[i2+1]; i += 1; end
+      collide_chain_segment_polygon_impl ss, bs, px, py, nx, ny, c, sp[:radius] || 0.0, bp, sp[:friction], sp[:restitution]
+    end
+
+    # Box2D-matching chain segment vs convex shape using GJK + Gauss map.
+    # vx/vy/nvx/nvy are per-vertex arrays (not interleaved) in world space.
+    CHAIN_GJK_CACHE ||= { count: 0, index_a0: 0, index_b0: 0, index_a1: 0, index_b1: 0 }
+
+    def collide_chain_segment_polygon_impl ss, bs, vx, vy, nvx, nvy, count, radius_b, bp, other_friction, other_restitution
+      p1x = ss[:wx1]; p1y = ss[:wy1]; p2x = ss[:wx2]; p2y = ss[:wy2]
+      g1x = ss[:wg1x]; g1y = ss[:wg1y]; g2x = ss[:wg2x]; g2y = ss[:wg2y]
+
+      # Smooth params from ghost vertices
+      e1x, e1y, n0x, n0y, n2x, n2y, convex1, convex2 = chain_smooth_params(p1x, p1y, p2x, p2y, g1x, g1y, g2x, g2y)
+      normal1x = e1y; normal1y = -e1x  # rightPerp(edge1)
+
+      # Compute polygon centroid
+      centroid_x = 0.0; centroid_y = 0.0; i = 0
+      while i < count; centroid_x += vx[i]; centroid_y += vy[i]; i += 1; end
+      inv_c = 1.0 / count; centroid_x *= inv_c; centroid_y *= inv_c
+
+      # One-sided rejection
+      behind1 = normal1x * (centroid_x - p1x) + normal1y * (centroid_y - p1y) < 0.0
+      behind0 = convex1 ? (n0x * (centroid_x - p1x) + n0y * (centroid_y - p1y) < 0.0) : true
+      behind2 = convex2 ? (n2x * (centroid_x - p2x) + n2y * (centroid_y - p2y) < 0.0) : true
+      return nil if behind1 && behind0 && behind2
+
+      # GJK distance between segment (no radius) and polygon (no radius)
+      seg_proxy = { points_x: [p1x, p2x], points_y: [p1y, p2y], count: 2, radius: 0.0 }
+      poly_proxy = { points_x: vx, points_y: vy, count: count, radius: 0.0 }
+      cache = CHAIN_GJK_CACHE; cache[:count] = 0
+      gjk = shape_distance(seg_proxy, poly_proxy, cache)
+      dist = gjk[:raw_distance]
+
+      return nil if dist > radius_b + Physics::SPECULATIVE_DISTANCE
+
+      # Smoothed neighbor normals for consistency checks
+      sn0x = convex1 ? n0x : normal1x; sn0y = convex1 ? n0y : normal1y
+      sn2x = convex2 ? n2x : normal1x; sn2y = convex2 ? n2y : normal1y
+
+      friction = Math.sqrt(ss[:friction] * other_friction)
+      restitution = ss[:restitution] > other_restitution ? ss[:restitution] : other_restitution
+
+      incident_index = -1
+      incident_normal = -1
+
+      #---------------------------------------------------------------
+      # CASE 1: centroid in front AND shapes separated (GJK found gap)
+      #---------------------------------------------------------------
+      if !behind1 && dist > 0.1 * Physics::LINEAR_SLOP
+        if cache[:count] == 1
+          # Vertex-vertex collision
+          pA_x = gjk[:point_ax]; pA_y = gjk[:point_ay]
+          pB_x = gjk[:point_bx]; pB_y = gjk[:point_by]
+          ddx = pB_x - pA_x; ddy = pB_y - pA_y
+          nl = Math.sqrt(ddx * ddx + ddy * ddy)
+          if nl > 1e-10; nnx = ddx / nl; nny = ddy / nl
+          else nnx = normal1x; nny = normal1y; end
+
+          type = classify_normal(e1x, e1y, n0x, n0y, n2x, n2y, convex1, convex2, nnx, nny)
+          return nil if type == :skip
+          if type == :admit
+            sep = dist - radius_b
+            cpx = pA_x + 0.5 * (radius_b - sep) * nnx
+            cpy = pA_y + 0.5 * (radius_b - sep) * nny
+            MR[:normal_x] = nnx; MR[:normal_y] = nny
+            MR[:friction] = friction; MR[:restitution] = restitution
+            MR[:points].clear
+            MR[:points] << make_contact_point(cpx - bs[:x], cpy - bs[:y], cpx - bp[:x], cpy - bp[:y], sep, (cache[:index_a0] << 8) | cache[:index_b0])
+            return MR
+          end
+          # :snap — fall through
+          incident_index = cache[:index_b0]
+
+        else # cache[:count] == 2
+          ia1 = cache[:index_a0]; ia2 = cache[:index_a1]
+          ib1 = cache[:index_b0]; ib2 = cache[:index_b1]
+
+          if ia1 == ia2
+            # One point on segment, two on polygon edge → polygon face is reference
+            ddx = gjk[:point_ax] - gjk[:point_bx]; ddy = gjk[:point_ay] - gjk[:point_by]
+            dot1 = ddx * nvx[ib1] + ddy * nvy[ib1]
+            dot2 = ddx * nvx[ib2] + ddy * nvy[ib2]
+            ib = dot1 > dot2 ? ib1 : ib2
+
+            type = classify_normal(e1x, e1y, n0x, n0y, n2x, n2y, convex1, convex2, -nvx[ib], -nvy[ib])
+            return nil if type == :skip
+            if type == :admit
+              ib_next = ib + 1 < count ? ib + 1 : 0
+              return clip_chain_vs_poly_face(p1x, p1y, p2x, p2y,
+                vx[ib], vy[ib], vx[ib_next], vy[ib_next],
+                nvx[ib], nvy[ib], radius_b,
+                normal1x, normal1y, sn0x, sn0y, sn2x, sn2y,
+                bs, bp, friction, restitution, ib, ib_next)
+            end
+            # :snap
+            incident_normal = ib
+          else
+            # Two points on segment → segment face is reference, find incident polygon vertex
+            dot1 = normal1x * (vx[ib1] - p1x) + normal1y * (vy[ib1] - p1y)
+            dot2 = normal1x * (vx[ib2] - p1x) + normal1y * (vy[ib2] - p1y)
+            incident_index = dot1 < dot2 ? ib1 : ib2
+          end
+        end
+
+      else
+        #---------------------------------------------------------------
+        # CASE 2: centroid behind segment normal or shapes overlapping
+        # Use SAT with Gauss map filtering
+        #---------------------------------------------------------------
+        edge_sep = 1e18; i = 0
+        while i < count
+          s = normal1x * (vx[i] - p1x) + normal1y * (vy[i] - p1y)
+          if s < edge_sep; edge_sep = s; incident_index = i; end
+          i += 1
+        end
+
+        if convex1
+          s0 = 1e18; i = 0
+          while i < count
+            s = n0x * (vx[i] - p1x) + n0y * (vy[i] - p1y); s0 = s if s < s0; i += 1
+          end
+          if s0 > edge_sep; edge_sep = s0; incident_index = -1; end
+        end
+
+        if convex2
+          s2 = 1e18; i = 0
+          while i < count
+            s = n2x * (vx[i] - p2x) + n2y * (vy[i] - p2y); s2 = s if s < s2; i += 1
+          end
+          if s2 > edge_sep; edge_sep = s2; incident_index = -1; end
+        end
+
+        # Check polygon face normals (admit-only via Gauss map)
+        poly_sep = -1e18; ref_idx = -1; i = 0
+        while i < count
+          nnx = -nvx[i]; nny = -nvy[i]
+          if classify_normal(e1x, e1y, n0x, n0y, n2x, n2y, convex1, convex2, nnx, nny) == :admit
+            s1 = nvx[i] * (p1x - vx[i]) + nvy[i] * (p1y - vy[i])
+            s2 = nvx[i] * (p2x - vx[i]) + nvy[i] * (p2y - vy[i])
+            s = s1 < s2 ? s1 : s2
+            if s > poly_sep; poly_sep = s; ref_idx = i; end
+          end
+          i += 1
+        end
+
+        if ref_idx >= 0 && poly_sep > edge_sep
+          ia_next = ref_idx + 1 < count ? ref_idx + 1 : 0
+          return clip_chain_vs_poly_face(p1x, p1y, p2x, p2y,
+            vx[ref_idx], vy[ref_idx], vx[ia_next], vy[ia_next],
+            nvx[ref_idx], nvy[ref_idx], radius_b,
+            normal1x, normal1y, sn0x, sn0y, sn2x, sn2y,
+            bs, bp, friction, restitution, ref_idx, ia_next)
+        end
+
+        return nil if incident_index < 0
+      end
+
+      #---------------------------------------------------------------
+      # CASE 3: segment normal is reference — clip polygon incident edge
+      #---------------------------------------------------------------
+      if incident_normal && incident_normal >= 0
+        ib1 = incident_normal; ib2 = ib1 + 1 < count ? ib1 + 1 : 0
+      elsif incident_index && incident_index >= 0
+        i2 = incident_index; i1 = i2 > 0 ? i2 - 1 : count - 1
+        d1 = normal1x * nvx[i1] + normal1y * nvy[i1]
+        d2 = normal1x * nvx[i2] + normal1y * nvy[i2]
+        if d1 < d2
+          ib1 = i1; ib2 = i2
+        else
+          ib1 = i2; ib2 = i2 + 1 < count ? i2 + 1 : 0
+        end
+      else
+        return nil
+      end
+
+      clip_segments_manifold(p1x, p1y, p2x, p2y, vx[ib1], vy[ib1], vx[ib2], vy[ib2],
+                             normal1x, normal1y, 0.0, radius_b,
+                             bs, bp, friction, restitution, (ib2 << 8) | 0, (ib1 << 8) | 1)
+    end
+
+    # Clip when polygon face is reference: clips segment against polygon edge
+    def clip_chain_vs_poly_face p1x, p1y, p2x, p2y, a1x, a1y, a2x, a2y, rnx, rny, radius_b, normal1x, normal1y, sn0x, sn0y, sn2x, sn2y, bs, bp, friction, restitution, ia1, ia2
+      # Consistency check with chain smoothing
+      d1 = rnx * (p1x - a1x) + rny * (p1y - a1y)
+      d2 = rnx * (p2x - a1x) + rny * (p2y - a1y)
+      if d1 < d2
+        return nil if sn0x * rnx + sn0y * rny < normal1x * rnx + normal1y * rny
+      else
+        return nil if sn2x * rnx + sn2y * rny < normal1x * rnx + normal1y * rny
+      end
+      clip_segments_manifold(a1x, a1y, a2x, a2y, p1x, p1y, p2x, p2y,
+                             rnx, rny, radius_b, 0.0,
+                             bp, bs, friction, restitution, (ia1 << 8) | 1, (ia2 << 8) | 0)
+    end
+
+    # Box2D b2ClipSegments equivalent: clips incident segment (b1-b2) against
+    # reference segment (a1-a2) with normal. Returns manifold or nil.
+    # Normal points from reference toward incident.
+    def clip_segments_manifold a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y, nx, ny, ra, rb, body_a, body_b, friction, restitution, id1, id2
+      # tangent = leftPerp(normal) = (-ny, nx)
+      tx = -ny; ty = nx
+
+      lower1 = 0.0
+      upper1 = (a2x - a1x) * tx + (a2y - a1y) * ty
+
+      # Incident edge (opposite winding)
+      upper2 = (b1x - a1x) * tx + (b1y - a1y) * ty
+      lower2 = (b2x - a1x) * tx + (b2y - a1y) * ty
+
+      # Overlap check
+      return nil if upper2 < lower1 || upper1 < lower2
+
+      # Clip lower
+      if lower2 < lower1 && (upper2 - lower2).abs > 1e-10
+        f = (lower1 - lower2) / (upper2 - lower2)
+        v_lower_x = b2x + f * (b1x - b2x); v_lower_y = b2y + f * (b1y - b2y)
+      else
+        v_lower_x = b2x; v_lower_y = b2y
+      end
+
+      # Clip upper
+      if upper2 > upper1 && (upper2 - lower2).abs > 1e-10
+        f = (upper1 - lower2) / (upper2 - lower2)
+        v_upper_x = b2x + f * (b1x - b2x); v_upper_y = b2y + f * (b1y - b2y)
+      else
+        v_upper_x = b1x; v_upper_y = b1y
+      end
+
+      sep_lower = (v_lower_x - a1x) * nx + (v_lower_y - a1y) * ny
+      sep_upper = (v_upper_x - a1x) * nx + (v_upper_y - a1y) * ny
+
+      radius = ra + rb
+      total_sep_lower = sep_lower - radius
+      total_sep_upper = sep_upper - radius
+      return nil if total_sep_lower > Physics::SPECULATIVE_DISTANCE && total_sep_upper > Physics::SPECULATIVE_DISTANCE
+
+      # Contact points at midpoint accounting for radii
+      v_lower_x += 0.5 * (ra - rb - sep_lower) * nx
+      v_lower_y += 0.5 * (ra - rb - sep_lower) * ny
+      v_upper_x += 0.5 * (ra - rb - sep_upper) * nx
+      v_upper_y += 0.5 * (ra - rb - sep_upper) * ny
+
+      bax = body_a.is_a?(Hash) ? body_a[:x] : 0.0
+      bay = body_a.is_a?(Hash) ? body_a[:y] : 0.0
+      bbx = body_b.is_a?(Hash) ? body_b[:x] : 0.0
+      bby = body_b.is_a?(Hash) ? body_b[:y] : 0.0
+
+      MR[:normal_x] = nx; MR[:normal_y] = ny
+      MR[:friction] = friction; MR[:restitution] = restitution
+      MR[:points].clear
+      MR[:points] << make_contact_point(v_lower_x - bax, v_lower_y - bay, v_lower_x - bbx, v_lower_y - bby, total_sep_lower, id1)
+      MR[:points] << make_contact_point(v_upper_x - bax, v_upper_y - bay, v_upper_x - bbx, v_upper_y - bby, total_sep_upper, id2)
+      MR
+    end
+
     # Per-shape ray casts. Returns nil on miss or RAY_HIT on hit.
     RAY_HIT ||= { hit: false, point_x: 0.0, point_y: 0.0, normal_x: 0.0, normal_y: 0.0, fraction: 0.0 }
 
@@ -2459,7 +3404,7 @@ module Collide
         ray_cast_capsule shape, body, ox, oy, dx, dy, max_fraction
       elsif t == :polygon
         ray_cast_polygon shape, body, ox, oy, dx, dy, max_fraction
-      elsif t == :segment
+      elsif t == :segment || t == :chain_segment
         ray_cast_segment shape, body, ox, oy, dx, dy, max_fraction
       end
     end
@@ -2517,14 +3462,14 @@ module Collide
       elsif t == :capsule
         { points_x: [shape[:wx1], shape[:wx2]], points_y: [shape[:wy1], shape[:wy2]],
           count: 2, radius: shape[:radius] }
-      elsif t == :segment
+      elsif t == :segment || t == :chain_segment
         { points_x: [shape[:wx1], shape[:wx2]], points_y: [shape[:wy1], shape[:wy2]],
           count: 2, radius: 0.0 }
       end
     end
 
     def support proxy, dx, dy
-      best = -1e18; best_i = 0; px = proxy[:points_x]; py = proxy[:points_y]; n = proxy[:count]; i = 0
+      best = -Float::INFINITY; best_i = 0; px = proxy[:points_x]; py = proxy[:points_y]; n = proxy[:count]; i = 0
       while i < n
         d = px[i] * dx + py[i] * dy
         if d > best; best = d; best_i = i; end
@@ -4884,3 +5829,4 @@ module DebugDraw
   end
 end
 end
+

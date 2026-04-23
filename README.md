@@ -17,7 +17,8 @@ convex decomposition, and procedural shattering
 - **Queries** — point, AABB overlap, ray cast, shape cast
 - **Time of impact** — GJK distance, conservative advancement, bilateral TOI sweeps
 - **Broadphase** — dynamic AABB tree (default) or spatial hash grid, switchable at runtime
-- **Callbacks** — world-level and per-body contact callbacks (begin/persist/end)
+- **Callbacks** — world-level and per-body contact callbacks (begin/persist/end/hit), pre-solve, sensors
+- **Continuous collision detection** — swept TOI with pre-solve veto, prevents tunneling for fast bodies
 - **Sleeping** — island-based sleeping
 - **Debug drawing** — contact points, AABBs, sleep state visualization
 
@@ -89,6 +90,7 @@ Creates a new physics world.
 | `contact_speed`          | `300.0`          | Maximum contact correction speed     |
 | `restitution_threshold`  | `100.0`          | Minimum speed for restitution        |
 | `max_linear_speed`       | `40000.0`        | Maximum body speed (pixels/s)        |
+| `hit_event_threshold`    | `100.0`          | Min approach speed for hit events    |
 
 #### Broadphase
 
@@ -163,6 +165,11 @@ box_shape = Physics.create_box body: body, w: 40, h: 20,
                                density: 1.0, friction: 0.6, restitution: 0.0,
                                layer: Physics::LAYERS[:terrain]  # omit mask: to collide with everything
 Physics.add_shape world, box_shape
+
+# Sensor shape — generates overlap events (on_sensor_begin/end) but does
+# not produce solver contacts; nothing is pushed out of a sensor.
+trigger = Physics.create_box body: body, w: 60, h: 60, is_sensor: true
+Physics.add_shape world, trigger
 
 polygon_shape = Physics.create_polygon body: body,
                                        vertices: [x0, y0, x1, y1, x2, y2, ...],  # flat array, convex hull computed automatically
@@ -392,6 +399,10 @@ Register on the world to observe all collision events. The receiver can be any o
 Physics.on_contact_begin world, receiver, :method_name
 Physics.on_contact_persist world, receiver, :method_name
 Physics.on_contact_end world, receiver, :method_name
+Physics.on_contact_hit world, receiver, :method_name      # high-impact collision
+Physics.on_pre_solve world, receiver, :method_name        # disable contacts before solving
+Physics.on_sensor_begin world, receiver, :method_name
+Physics.on_sensor_end world, receiver, :method_name
 ```
 
 #### Per-body callbacks
@@ -402,6 +413,9 @@ Register on an individual body. Both bodies in a collision are notified. Each bo
 Physics.on_body_contact_begin body, receiver, :method_name
 Physics.on_body_contact_persist body, receiver, :method_name
 Physics.on_body_contact_end body, receiver, :method_name
+Physics.on_body_contact_hit body, receiver, :method_name
+Physics.on_body_sensor_begin body, receiver, :method_name
+Physics.on_body_sensor_end body, receiver, :method_name
 ```
 
 Example — kill an enemy when it gets hit hard:
@@ -436,11 +450,15 @@ def on_begin body_a, body_b, pair
 end
 ```
 
-| Callback               | Fires when                               | Typical use                  |
-|------------------------|------------------------------------------|------------------------------|
-| `on_contact_begin`     | Two shapes first touch                   | Damage, sound effects        |
-| `on_contact_persist`   | Two shapes remain in contact each frame  | Conveyor belts, area effects |
-| `on_contact_end`       | Two shapes separate                      | Stop sounds, clear state     |
+| Callback               | Fires when                                            | Typical use                  |
+|------------------------|-------------------------------------------------------|------------------------------|
+| `on_contact_begin`     | Two shapes first touch                                | Damage, sound effects        |
+| `on_contact_persist`   | Two shapes remain in contact each frame               | Conveyor belts, area effects |
+| `on_contact_end`       | Two shapes separate                                   | Stop sounds, clear state     |
+| `on_contact_hit`       | Contact approach speed exceeds hit-event threshold    | Impact sparks, damage        |
+| `on_pre_solve`         | Before the solver resolves a contact (can disable it) | One-way platforms, phasing   |
+| `on_sensor_begin`      | A body first enters a sensor shape                    | Triggers, pickups            |
+| `on_sensor_end`        | A body leaves a sensor shape                          | Exit triggers                |
 
 **Notes:**
 - Callbacks fire inline during `Physics.tick` (inside `find_contacts`). Do not add/remove bodies or shapes inside a callback.
@@ -450,6 +468,83 @@ end
 - Multiple shapes between the same two bodies produce separate callbacks.
 - Sleeping contacts: no `persist` or `end` events fire while both bodies sleep.
 - Unregister: `world[:on_contact_begin] = nil` (world) or `body[:on_contact_begin] = nil` (per-body).
+
+#### Pre-solve
+
+Runs once per contact pair after narrowphase and before the constraint solver. Return `false` to disable the contact for this tick — the pair is removed from the solver's pair list, so no impulses are applied and bodies pass through. Return anything else (or `true`) to keep the contact.
+
+```ruby
+Physics.on_pre_solve world, receiver, :on_pre_solve
+
+def on_pre_solve body_a, body_b, pair
+  # Inspect `pair[:manifold][:normal_x/y]` — the normal points A → B.
+  # Return false to disable the contact; any other value keeps it.
+  true
+end
+```
+
+Pre-solve is also invoked during continuous-collision-detection (CCD) evaluation: if a swept TOI is about to clamp a dynamic body, pre-solve gets a chance to veto the clamp with the same signature and normal convention. This lets one-way platforms, phase gates, etc. behave consistently for both fast and slow motion.
+
+**One-way platform example:**
+
+```ruby
+Physics.on_pre_solve world, self, :platform_pre_solve
+
+def platform_pre_solve body_a, body_b, pair
+  plat_is_a = body_a[:one_way]
+  return true unless plat_is_a || body_b[:one_way]
+  dyn = plat_is_a ? body_b : body_a
+  ny  = pair[:manifold][:normal_y]
+  n_from_plat_y = plat_is_a ? ny : -ny
+  # Accept only when the platform would push the dynamic body up
+  # and the body isn't ascending (matches Box2D's one-way sample).
+  n_from_plat_y > 0.95 && dyn[:vy] <= 0.0
+end
+```
+
+See the **Callbacks → Pre-solve** sub-scene in `app/main.rb` for a full platformer built on this.
+
+#### Hit events
+
+Hit events fire for high-speed impacts, in addition to `on_contact_begin`. Each contact point's approach speed is measured; if it exceeds `world[:hit_event_threshold]` (default `100.0` px/s) and the solver applied a nonzero normal impulse, the hit callback fires at the contact point.
+
+```ruby
+Physics.on_contact_hit world, receiver, :on_hit
+
+def on_hit body_a, body_b, pair, wx, wy, speed
+  # wx, wy — world-space hit location
+  # speed  — approach speed that tripped the threshold
+end
+```
+
+Tune sensitivity per world by writing `world[:hit_event_threshold] = 250.0`. Use the per-body variant `Physics.on_body_contact_hit body, ...` to listen only on specific bodies. Only the first qualifying contact point per pair fires per frame.
+
+#### Sensors
+
+Shapes created with `is_sensor: true` generate overlap events but do not produce solver contacts — nothing is pushed out of a sensor. Sensors are ideal for triggers, pickups, and zone detection.
+
+```ruby
+trigger_shape = Physics.create_box body: trigger_body, w: 40, h: 40, is_sensor: true
+Physics.add_shape world, trigger_shape
+
+Physics.on_sensor_begin world, self, :on_sensor_enter
+Physics.on_sensor_end   world, self, :on_sensor_exit
+
+def on_sensor_enter body_a, body_b, pair; end
+def on_sensor_exit  body_a, body_b, pair; end
+```
+
+### Continuous Collision Detection
+
+CCD prevents fast-moving dynamic bodies from tunneling through thin static geometry. It runs automatically once per sub-step for every dynamic body whose displacement this step exceeds half its smallest shape extent. Each body is swept against the static broadphase tree and its motion is clamped to the earliest time-of-impact (TOI) hit. Velocity is preserved — the discrete solver resolves the resulting contact next tick.
+
+Requirements and caveats:
+
+- Only active with the `:dynamic_tree` broadphase (the default). The spatial-hash broadphase doesn't maintain a static-only tree.
+- Dynamic-vs-dynamic sweeps are not clamped (same as Box2D's non-bullet default).
+- Sensor shapes are skipped.
+- Collision filtering (`layer`/`mask`) is honored.
+- Pre-solve callbacks run on CCD hits too — return `false` to veto the TOI clamp for that pair (used by one-way platforms so upward motion through a platform isn't stopped by CCD either).
 
 ### Sleeping
 
@@ -478,7 +573,7 @@ The `app/main.rb` and `app/stress.rb` files contain several interactive demos:
 | Sandbox   | `Shift+T`    | Click to spawn shapes, Tab to cycle type             |
 | Joints    | `Shift+J`    | Joint demos (1-7 to switch scenes)                   |
 | Stress    | `Shift+S`    | Stress tests (mass spawn, churn, GC, decomposed)     |
-| Callbacks | `Shift+C`    | Visual callback demo (begin/persist/end effects)     |
+| Callbacks | `Shift+C`    | Callback demos: begin/persist/end, pre-solve platformer, hit events, CCD |
 | Benchmark | `Shift+B`    | Broadphase A/B comparison (8 scenarios, 1-8 to pick) |
 | Queries   | `Shift+Q`    | Query demos (1-5: raycast, AABB, point, shapecast, TOI) |
 

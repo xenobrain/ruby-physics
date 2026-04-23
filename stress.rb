@@ -160,7 +160,7 @@ module StressTest
           $gtk.log "Aggressive GC re-enabled (requires restart to take effect)"
         end
       end
-      if args.inputs.keyboard.key_down.d
+      if args.inputs.keyboard.key_down.d && (args.inputs.keyboard.ctrl || args.inputs.keyboard.meta)
         args.state.stress_debug_draw = !args.state.stress_debug_draw
       end
       if args.inputs.keyboard.key_down.b
@@ -419,7 +419,7 @@ module StressTest
 
       args.outputs.debug << "STRESS [#{scenario_name}] F:#{args.state.stress_frame} FPS:#{args.gtk.current_framerate.to_i}#{gc_label}#{agc_label} BP:#{bp_type}#{bp_info}"
       args.outputs.debug << "Bodies:#{dc} Sleep:#{sc_count} Pairs:#{pairs_count} Contacts:#{cp_count} Cands:#{cand_count} CPool:#{Physics::CONTACT_POOL.length} PPool:#{Physics::PAIR_POOL.length}"
-      args.outputs.debug << "1-4=scenario B=broadphase G=gcPressure A=agcToggle D=debug R=reset Shift+S=back"
+      args.outputs.debug << "1-4=scenario B=broadphase G=gcPressure A=agcToggle Ctrl+D=debug R=reset Shift+S=back"
     end
 
   end
