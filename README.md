@@ -190,6 +190,33 @@ Physics.add_shape world, segment_shape
 
 Both `layer:` and `mask:` are optional — omit either to collide with everything.
 
+### Simulated Sprites
+
+One-call helpers that turn a DragonRuby sprite hash into a dynamic body + shape and write the simulated transform back onto the sprite every tick. Useful for the common case where you just want a sprite to fall/bounce without managing a separate body hash.
+
+```ruby
+# Box body sized to the sprite's w/h, written back as x/y/angle each tick.
+body = Physics.simulate_sprite world, sprite
+
+# Circle body; uses sprite[:radius] (falling back to w/h if absent).
+body = Physics.simulate_circle world, sprite
+
+# Detach the simulation and remove the body.
+Physics.remove_simulated_sprite world, sprite
+```
+
+The sprite's `x`, `y`, `w`, `h`, `anchor_x`, `anchor_y`, and `angle` (degrees) are read once at creation to place the body. After that, each `Physics.tick` updates `sprite[:x]`, `sprite[:y]`, and `sprite[:angle]` in place. The sprite is the anchor — modify its visual fields freely; only positional fields are overwritten.
+
+```ruby
+sprite = { x: 640, y: 500, w: 40, h: 40, path: 'sprites/square/blue.png',
+           anchor_x: 0.5, anchor_y: 0.5 }
+args.outputs.sprites << sprite
+Physics.simulate_sprite args.state.world, sprite
+# each tick: Physics.tick → sprite's x/y/angle update → render
+```
+
+The returned body hash is a regular dynamic body — apply forces, set velocity, register per-body callbacks, attach joints, etc. You can also add additional shapes to it (the auto-created shape just serves as the default collider).
+
 ### Forces and Impulses
 
 ```ruby

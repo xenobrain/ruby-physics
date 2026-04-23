@@ -525,7 +525,7 @@ module Physics
       body
     end
 
-    def simulate_sphere world, sprite
+    def simulate_circle world, sprite
       r = (sprite[:radius] || 0.0).to_f
       sw = (sprite[:w] || r * 2.0).to_f
       sh = (sprite[:h] || r * 2.0).to_f
