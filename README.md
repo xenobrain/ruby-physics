@@ -201,6 +201,10 @@ body = Physics.simulate_sprite world, sprite
 # Circle body; uses sprite[:radius] (falling back to w/h if absent).
 body = Physics.simulate_circle world, sprite
 
+# Both accept an optional density: keyword (default 1.0) used to auto-compute
+# mass from the sprite's geometry.
+body = Physics.simulate_sprite world, sprite, density: 2.5
+
 # Detach the simulation and remove the body.
 Physics.remove_simulated_sprite world, sprite
 ```
@@ -216,6 +220,16 @@ Physics.simulate_sprite args.state.world, sprite
 ```
 
 The returned body hash is a regular dynamic body — apply forces, set velocity, register per-body callbacks, attach joints, etc. You can also add additional shapes to it (the auto-created shape just serves as the default collider).
+
+**Mass / density.** Mass is auto-computed from density × geometry when the shape is added. Pass `density:` to scale (default `1.0`), or override `mass` / `inertia` directly on the returned body for fine control:
+
+```ruby
+body = Physics.simulate_sprite world, sprite, density: 2.5
+
+# Or override the auto-computed values directly:
+Physics.set_mass    world, body, 5.0
+Physics.set_inertia world, body, 200.0
+```
 
 ### Forces and Impulses
 

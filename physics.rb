@@ -503,7 +503,7 @@ module Physics
       shape
     end
 
-    def simulate_sprite world, sprite
+    def simulate_sprite world, sprite, density: 1.0
       sw = (sprite[:w] || 0.0).to_f
       sh = (sprite[:h] || 0.0).to_f
       ax = (sprite[:anchor_x] || 0.0).to_f
@@ -516,7 +516,7 @@ module Physics
       body = create_body(x: bx, y: by, angle: angle, type: :dynamic)
       add_body(world, body)
 
-      shape = create_box(body: body, w: sw, h: sh, density: 1.0)
+      shape = create_box(body: body, w: sw, h: sh, density: density)
       add_shape(world, shape)
 
       world[:simulated_sprites] ||= []
@@ -525,7 +525,7 @@ module Physics
       body
     end
 
-    def simulate_circle world, sprite
+    def simulate_circle world, sprite, density: 1.0
       r = (sprite[:radius] || 0.0).to_f
       sw = (sprite[:w] || r * 2.0).to_f
       sh = (sprite[:h] || r * 2.0).to_f
@@ -539,7 +539,7 @@ module Physics
       body = create_body(x: bx, y: by, angle: angle, type: :dynamic)
       add_body(world, body)
 
-      shape = create_circle(body: body, radius: r, density: 1.0)
+      shape = create_circle(body: body, radius: r, density: density)
       add_shape(world, shape)
 
       world[:simulated_sprites] ||= []
